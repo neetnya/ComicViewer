@@ -375,7 +375,8 @@ public partial class MainWindow : Window
     /// <summary>后台预加载首屏附近的前几张图片（从第 1 张起，不阻塞首屏）。</summary>
     private async Task LoadNearbyPagesAsync(int decodeWidth)
     {
-        for (var i = 1; i < Math.Min(6, _comicItems.Count); i++)
+        var count = Math.Max(0, _config.PreloadDownCount) + 1;
+        for (var i = 1; i < Math.Min(count, _comicItems.Count); i++)
         {
             await LoadComicItemAsync(i, decodeWidth);
         }
@@ -476,18 +477,47 @@ public partial class MainWindow : Window
         var decodeWidth = (int)(GetComicDisplayWidth() * 1.5);
         if (decodeWidth < 50) decodeWidth = 50;
 
-        // 预加载窗口：向上提前 3 页、向下提前 8 页，避免快速滚动到边界时卡顿
-        for (var i = Math.Max(0, _comicCurrentPage - 3);
-             i <= Math.Min(_comicItems.Count - 1, _comicCurrentPage + 8);
-             i++)
+        // 窗口中心用「当前可见图片索引」（按图片高度累计），而非「屏页索引」，
+        // 因为单张图片高度常大于一屏，用屏页会错位，导致当前可见图被误判为离屏。
+        var center = GetComicCurrentImageIndex();
+        var up = Math.Max(0, _config.PreloadUpCount);
+        var down = Math.Max(0, _config.PreloadDownCount);
+        var first = Math.Max(0, center - up);
+        var last = Math.Min(_comicItems.Count - 1, center + down);
+
+        // 先回收离屏图片，再并发加载窗口内缺失的图片（不逐张 await 排队）。
+        ReleaseDistantComicSources(first, last);
+
+        var tasks = new List<Task>();
+        for (var i = first; i <= last; i++)
         {
-            if (_comicItems[i].Source == null && _comicItems[i].Loading == false)
+            var item = _comicItems[i];
+            if (item.Source == null && item.Loading == false)
             {
-                _comicItems[i].Loading = true;
-                var idx = i;
-                await LoadComicItemAsync(idx, decodeWidth);
-                _comicItems[idx].Loading = false;
+                item.Loading = true;
+                tasks.Add(LoadComicItemAsync(i, decodeWidth));
             }
+        }
+
+        // 并发加载，全部完成后统一复位 Loading 标志。
+        if (tasks.Count > 0)
+        {
+            await Task.WhenAll(tasks);
+            for (var i = first; i <= last; i++)
+                _comicItems[i].Loading = false;
+        }
+    }
+
+    /// <summary>
+    /// 释放预加载窗口之外的已解码图片源（Source 置 null），仅保留当前可见图片附近，
+    /// 使 WPF 回收非托管解码内存，降低内存占用。
+    /// </summary>
+    private void ReleaseDistantComicSources(int first, int last)
+    {
+        for (var i = 0; i < _comicItems.Count; i++)
+        {
+            if (i < first || i > last)
+                _comicItems[i].Source = null;
         }
     }
 
@@ -528,11 +558,13 @@ public partial class MainWindow : Window
         await PrecomputeHeightsAsync(displayWidth);
 
         // 后台按新分辨率重新解码当前页附近，替换为更清晰版本。
+        // 先置空旧 Source，避免新旧 BitmapSource 同时驻留造成内存峰值。
         for (var i = Math.Max(0, currentIndex - 2);
              i <= Math.Min(_comicItems.Count - 1, currentIndex + 3);
              i++)
         {
             var item = _comicItems[i];
+            item.Source = null;
             var bmp = await ImageLoaderService.LoadAsync(item.Path, decodeWidth);
             if (bmp != null)
                 item.Source = bmp;

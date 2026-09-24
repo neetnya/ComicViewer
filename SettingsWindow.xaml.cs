@@ -13,6 +13,8 @@ public partial class SettingsWindow : Window
         WidthSlider.Value = config.ComicWidthRatio;
         FullscreenCheck.IsChecked = config.StartFullscreen;
         ScrollStepBox.Text = config.ScrollStepPixels.ToString("0");
+        PreloadUpBox.Text = config.PreloadUpCount.ToString();
+        PreloadDownBox.Text = config.PreloadDownCount.ToString();
         UpdateWidthLabel();
     }
 
@@ -36,6 +38,18 @@ public partial class SettingsWindow : Window
         // 仅做实时校验提示，实际值在保存时读取
     }
 
+    private void PreloadUpBox_OnTextChanged(object sender,
+        System.Windows.Controls.TextChangedEventArgs e)
+    {
+        // 仅做实时校验提示，实际值在保存时读取
+    }
+
+    private void PreloadDownBox_OnTextChanged(object sender,
+        System.Windows.Controls.TextChangedEventArgs e)
+    {
+        // 仅做实时校验提示，实际值在保存时读取
+    }
+
     private void BtnSave_OnClick(object sender, RoutedEventArgs e)
     {
         _config.ComicWidthRatio = WidthSlider.Value;
@@ -46,6 +60,17 @@ public partial class SettingsWindow : Window
             _config.ScrollStepPixels = px;
         else
             _config.ScrollStepPixels = 300;
+
+        // 解析预加载页数，非法或负值回退默认（上 2 / 下 5）
+        if (int.TryParse(PreloadUpBox.Text, out var up) && up >= 0)
+            _config.PreloadUpCount = up;
+        else
+            _config.PreloadUpCount = 2;
+
+        if (int.TryParse(PreloadDownBox.Text, out var down) && down >= 0)
+            _config.PreloadDownCount = down;
+        else
+            _config.PreloadDownCount = 5;
 
         DialogResult = true;
         Close();

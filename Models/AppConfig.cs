@@ -34,6 +34,12 @@ public class AppConfig
     /// <summary>漫画模式滚轮滚动步长（像素）。</summary>
     public double ScrollStepPixels { get; set; } = 300;
 
+    /// <summary>漫画模式向上预加载页数（当前页之前保留/预解码的页数）。</summary>
+    public int PreloadUpCount { get; set; } = 2;
+
+    /// <summary>漫画模式向下预加载页数（当前页之后预解码的页数）。</summary>
+    public int PreloadDownCount { get; set; } = 5;
+
     /// <summary>支持的图片扩展名（小写，含点）。</summary>
     [JsonIgnore]
     public static readonly string[] ImageExtensions =
