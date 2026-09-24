@@ -1,0 +1,61 @@
+<Window x:Class="ComicViewer.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置" Height="430" Width="420"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="#1a1a1a">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="ComicViewer 设置" FontSize="18" FontWeight="Bold"
+                   Foreground="#eee" Margin="0,0,0,16"/>
+
+        <TextBlock Grid.Row="1" Text="缩放：图片宽度 = 窗口宽度 × 百分比" Foreground="#ccc"
+                   FontSize="13" Margin="0,0,0,6"/>
+
+        <Slider x:Name="WidthSlider" Grid.Row="2" Minimum="0.1" Maximum="1.0"
+                TickFrequency="0.05" IsSnapToTickEnabled="True"
+                ValueChanged="WidthSlider_OnValueChanged"
+                Margin="0,0,0,4"/>
+
+        <TextBlock x:Name="WidthLabel" Grid.Row="3" Text="75%" Foreground="#eee"
+                   FontSize="14" HorizontalAlignment="Center" Margin="0,0,0,16"/>
+
+        <TextBlock Grid.Row="4" Text="滚轮滚动距离（像素）" Foreground="#ccc"
+                   FontSize="13" Margin="0,0,0,6"/>
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,0,0,16">
+            <TextBox x:Name="ScrollStepBox" Width="100" Height="26"
+                     Foreground="#eee" Background="#333" BorderBrush="#555"
+                     VerticalContentAlignment="Center"
+                     TextChanged="ScrollStepBox_OnTextChanged"/>
+            <TextBlock Text="px（滚轮每格滚动的像素数）" Foreground="#888"
+                       FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="6" Text="启动时全屏" Foreground="#ccc" FontSize="13"/>
+        <CheckBox x:Name="FullscreenCheck" Grid.Row="7" Content="打开软件时自动全屏"
+                  Foreground="#eee" FontSize="13" Margin="0,6,0,0"
+                  VerticalAlignment="Top"/>
+
+        <StackPanel Grid.Row="8" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="设为默认图片查看器" Width="150" Height="32" Margin="0,0,8,0"
+                    Click="BtnAssoc_OnClick"/>
+            <Button Content="保存" Width="80" Height="32" Margin="0,0,8,0"
+                    Click="BtnSave_OnClick"/>
+            <Button Content="取消" Width="80" Height="32"
+                    Click="BtnCancel_OnClick"/>
+        </StackPanel>
+    </Grid>
+</Window>
