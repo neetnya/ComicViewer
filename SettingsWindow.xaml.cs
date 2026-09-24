@@ -61,14 +61,14 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            Services.FileAssociationService.TrySetAsDefault();
+            Services.FileAssociationService.RegisterAndOpenSettings();
             MessageBox.Show(this,
-                "已打开系统默认应用设置。\n请在「照片查看器」中选择 ComicViewer 作为默认。",
+                "已注册图片类型关联。\n请在打开的「默认应用」列表中选择 ComicViewer 作为默认图片查看器。",
                 "提示", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"无法打开设置：{ex.Message}", "错误",
+            MessageBox.Show(this, $"关联失败：{ex.Message}", "错误",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }

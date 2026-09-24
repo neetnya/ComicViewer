@@ -16,9 +16,7 @@
         Closing="MainWindow_OnClosing"
         AllowDrop="True"
         Drop="MainWindow_OnDrop"
-        PreviewMouseWheel="MainWindow_OnPreviewMouseWheel"
-        PreviewMouseDown="MainWindow_OnPreviewMouseDown"
-        PreviewMouseUp="MainWindow_OnPreviewMouseUp">
+        PreviewMouseWheel="MainWindow_OnPreviewMouseWheel">
 
     <Window.Resources>
         <!-- 侧栏深色细滚动条样式 -->

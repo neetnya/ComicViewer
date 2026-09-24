@@ -37,8 +37,8 @@
 
 | 模式 | 左键 | 右键 | 滚轮 |
 | --- | --- | --- | --- |
-| 漫画模式 | 翻一页（末页→下一本） | 按住滚轮调宽度 | 惯性滚动 |
-| 图片模式 | 下一张（末张→下一本） | 上一张（首张→上一本） | 按住右键滚轮缩放 |
+| 漫画模式 | 翻一页（末页→下一本） | （无操作） | 惯性滚动；`Ctrl`+滚轮调宽度 |
+| 图片模式 | 下一张（末张→下一本） | 上一张（首张→上一本） | `Ctrl`+滚轮临时缩放 |
 
 ### 键盘快捷键
 
@@ -48,6 +48,7 @@
 | `Esc` | 退出全屏 |
 | `←` / `PageUp` | 上一张 / 上一页 |
 | `→` / `PageDown` / `空格` | 下一张 / 下一页 |
+| `Enter` | 等同鼠标左键（漫画翻一页 / 图片下一张，末页进入下一本） |
 
 ## 构建与运行
 
@@ -89,8 +90,9 @@ ComicViewer/
 │   ├── ConfigService.cs         # 配置读写（exe 同目录 config.json）
 │   ├── FolderNavigationService.cs # 目录 / 盘符 / 同级文件夹枚举与自然排序
 │   ├── ImageLoaderService.cs    # 异步图片解码（GIF 动画、按宽度缩放）
-│   └── FileAssociationService.cs # 引导设置默认图片查看器
+│   └── FileAssociationService.cs # 注册图片类型关联（出现在系统默认应用列表）
 ├── VisualTreeExtensions.cs      # 可视化树辅助扩展方法
+├── ComicViewer.ico              # 应用图标
 ├── app.manifest                 # 高 DPI 声明、权限级别
 ├── build.ps1                    # 一键发布脚本
 └── ComicViewer.csproj
@@ -106,10 +108,9 @@ ComicViewer/
 | `ComicWidthRatio` | 漫画图片宽度 = 窗口宽度 × 该值（0.1~1.0） | `0.75` |
 | `StartFullscreen` | 启动时全屏 | `true` |
 | `ScrollStepPixels` | 滚轮每格惯性滚动像素 | `300` |
-| `LastFolder` | 上次打开目录（下次启动恢复） | 空 |
 
 ## 常见问题
 
 - **打开大本漫画稍卡**：首屏只同步解码第一张，其余尺寸与图片在后台渐进加载，滚动到再解码，属预期行为。
-- **设为默认图片查看器**：Windows 8+ 受系统 `UserChoice` 保护，程序只能打开系统设置页引导，需手动确认。
+- **自动关联图片类型**：设置里的「自动关联图片类型」会写入注册表 ProgId / 应用程序条目 / Capabilities，让 ComicViewer 出现在系统「默认应用」候选列表中；真正设为默认受 Windows `UserChoice` 保护，需在弹出的默认应用页手动选择。
 - **图片不显示**：确认目录内图片扩展名在支持列表内（`.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.tif` `.tiff` `.ico` `.wmf` `.emf`）。

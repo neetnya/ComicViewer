@@ -34,9 +34,6 @@ public class AppConfig
     /// <summary>漫画模式滚轮滚动步长（像素）。</summary>
     public double ScrollStepPixels { get; set; } = 300;
 
-    /// <summary>上次打开的文件夹路径（便于下次启动恢复）。</summary>
-    public string? LastFolder { get; set; }
-
     /// <summary>支持的图片扩展名（小写，含点）。</summary>
     [JsonIgnore]
     public static readonly string[] ImageExtensions =

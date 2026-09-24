@@ -30,7 +30,6 @@ public partial class MainWindow : Window
 
     // 图片模式：临时缩放（按住右键滚轮），不记忆。
     private double _imageTempZoom = 1.0;
-    private bool _isRightButtonDown;
 
     // 漫画模式：平滑滚动（惯性滚动速度，像素/帧）
     private double _scrollVelocity;
@@ -40,11 +39,6 @@ public partial class MainWindow : Window
     // 惯性滚动参数：摩擦系数（按 60fps 基准每帧速度保留比例）、速度上限（像素/秒）。
     private const double ScrollFriction = 0.90;
     private const double MaxScrollVelocity = 120000;
-
-    // 侧栏目录项单击/双击区分：单击延迟到双击时间窗过后再执行。
-    private DispatcherTimer? _clickDelayTimer;
-    private string? _pendingClickPath;
-    private Border? _pendingClickBorder;
 
     // 侧栏单击选中高亮：记录当前选中项，用于单击视觉反馈。
     private string? _selectedPath;
@@ -99,7 +93,14 @@ public partial class MainWindow : Window
             var folder = Path.GetDirectoryName(args[1]);
             if (folder != null)
             {
-                await OpenFolderAsync(folder);
+                // 阅读图片所在目录，但左侧目录显示其「上一级」（父目录），
+                // 并高亮当前目录，而非直接钻入。
+                await OpenFolderAsync(folder, updateSidebar: false);
+                _sidebarFolder = Directory.GetParent(folder)?.FullName;
+                _selectedPath = folder;
+                BuildSidebarFolderList();
+                SelectSidebarItem(folder);
+
                 var file = args[1];
                 var idx = _imageFiles.FindIndex(f =>
                     string.Equals(f, file, StringComparison.OrdinalIgnoreCase));
@@ -112,12 +113,6 @@ public partial class MainWindow : Window
                 return;
             }
         }
-        else if (!string.IsNullOrEmpty(_config.LastFolder) &&
-                 Directory.Exists(_config.LastFolder))
-        {
-            await OpenFolderAsync(_config.LastFolder);
-            return;
-        }
 
         // 无文件夹：侧栏显示计算机磁盘根目录
         _sidebarFolder = null;
@@ -128,7 +123,6 @@ public partial class MainWindow : Window
     {
         _sidebarHideTimer?.Stop();
         CompositionTarget.Rendering -= ScrollAnim_Rendering;
-        _config.LastFolder = _currentFolder;
         ConfigService.Save(_config);
     }
 
@@ -207,6 +201,11 @@ public partial class MainWindow : Window
             case Key.PageDown:
             case Key.Space:
                 GoNext();
+                e.Handled = true;
+                break;
+            case Key.Enter:
+                // 回车键等同于鼠标左键：漫画翻一页 / 图片下一张（末页进入下一本）。
+                HandleLeftClickAction();
                 e.Handled = true;
                 break;
         }
@@ -504,30 +503,44 @@ public partial class MainWindow : Window
         return w * ratio;
     }
 
-    /// <summary>重新按当前宽度比例加载漫画模式图片。</summary>
+    /// <summary>
+    /// 重新应用漫画显示宽度（宽度比例变化，如设置保存、Ctrl+滚轮调宽度）。
+    /// 保留已有图片先等比缩放（避免黑屏），再后台按新分辨率重新解码当前页附近
+    /// 以保持清晰度。
+    /// </summary>
     private async Task ApplyComicWidthAsync()
     {
         var displayWidth = GetComicDisplayWidth();
         var decodeWidth = (int)(displayWidth * 1.5);
         if (decodeWidth < 50) decodeWidth = 50;
 
-        // 更新所有项的显示宽度与高度（按原始宽高比重算）
+        // 记录当前页，缩放后重新定位回同一页。
+        var currentIndex = GetComicCurrentImageIndex();
+
+        // 更新显示宽度（保留 Source，不丢图片，避免黑屏；Image 会等比拉伸）。
         foreach (var item in _comicItems)
         {
             item.DisplayWidth = displayWidth;
-            item.Source = null;
             item.Loading = false;
         }
 
-        // 重新预计算高度
+        // 按新宽度重算占位高度。
         await PrecomputeHeightsAsync(displayWidth);
 
-        for (var i = Math.Max(0, _comicCurrentPage - 3);
-             i <= Math.Min(_comicItems.Count - 1, _comicCurrentPage + 8);
+        // 后台按新分辨率重新解码当前页附近，替换为更清晰版本。
+        for (var i = Math.Max(0, currentIndex - 2);
+             i <= Math.Min(_comicItems.Count - 1, currentIndex + 3);
              i++)
         {
-            await LoadComicItemAsync(i, decodeWidth);
+            var item = _comicItems[i];
+            var bmp = await ImageLoaderService.LoadAsync(item.Path, decodeWidth);
+            if (bmp != null)
+                item.Source = bmp;
         }
+
+        // 布局稳定后回到当前页。
+        await Dispatcher.InvokeAsync(
+            () => ScrollComicToIndex(currentIndex), DispatcherPriority.Loaded);
     }
 
     /// <summary>
@@ -590,18 +603,6 @@ public partial class MainWindow : Window
 
     #region 鼠标交互（点击翻页、缩放、宽度调节）
 
-    private void MainWindow_OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Right)
-            _isRightButtonDown = true;
-    }
-
-    private void MainWindow_OnPreviewMouseUp(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton == MouseButton.Right)
-            _isRightButtonDown = false;
-    }
-
     /// <summary>
     /// 漫画模式左键：滚一页；已到末页 → 下一文件夹。
     /// 图片模式左键：下一张；已末张 → 下一文件夹。
@@ -611,6 +612,16 @@ public partial class MainWindow : Window
         base.OnMouseLeftButtonDown(e);
         if (IsOverInteractiveControl(e)) return;
 
+        HandleLeftClickAction();
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// 左键动作（漫画翻一页 / 图片下一张，末页进入下一本）。
+    /// 供鼠标左键与回车键共用。
+    /// </summary>
+    private void HandleLeftClickAction()
+    {
         if (_config.Mode == ViewMode.Comic)
         {
             // 漫画模式：左键滚一页；末页再点 → 下一文件夹
@@ -635,7 +646,6 @@ public partial class MainWindow : Window
                 GoNext();
             }
         }
-        e.Handled = true;
     }
 
     /// <summary>图片模式右键：上一张；首张 → 上一文件夹。</summary>
@@ -656,16 +666,6 @@ public partial class MainWindow : Window
             }
             e.Handled = true;
         }
-        else
-        {
-            _isRightButtonDown = true;
-        }
-    }
-
-    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
-    {
-        base.OnMouseRightButtonUp(e);
-        _isRightButtonDown = false;
     }
 
     /// <summary>判断点击是否落在交互控件（按钮/滚动条/侧栏/顶栏）上。</summary>
@@ -684,7 +684,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// 滚轮处理：
-    /// - 按住右键滚轮：漫画模式调宽度（记忆），图片模式临时缩放（不记忆）。
+    /// - Ctrl + 滚轮：漫画模式调宽度（记忆），图片模式临时缩放（不记忆）。
     /// - 普通滚轮：漫画模式加速滚动（模拟浏览器）。
     /// </summary>
     private async void MainWindow_OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -696,7 +696,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_isRightButtonDown)
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
             if (_config.Mode == ViewMode.Comic)
             {
@@ -927,7 +927,7 @@ public partial class MainWindow : Window
     {
         var tb = new TextBlock
         {
-            Text = (isCurrent ? "▶  " : "    ") + text,
+            Text = text,
             Foreground = Brushes.White,
             FontSize = 13,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -945,9 +945,9 @@ public partial class MainWindow : Window
             Cursor = Cursors.Hand,
         };
 
-        // 单击：选中高亮 + 查看目录（加载其图片）；双击：进入该目录（侧栏显示其下一级）。
-        // 用 MouseLeftButtonDown 检测（ClickCount 更可靠），并立刻标记 Handled，
-        // 防止事件继续冒泡到窗口而误触右侧翻页。单击延迟到双击时间窗过后才执行阅读。
+        // 单击：选中高亮 + 立即阅读该目录（加载其图片）；双击：进入该目录（侧栏显示其下一级）。
+        // 用 MouseLeftButtonDown 检测（ClickCount 可靠），并立刻标记 Handled，
+        // 防止事件继续冒泡到窗口而误触右侧翻页。单击立即响应，不再等待双击时间窗。
         border.MouseLeftButtonDown += (_, e) =>
         {
             e.Handled = true;
@@ -955,29 +955,15 @@ public partial class MainWindow : Window
             if (e.ClickCount >= 2)
             {
                 // 双击：进入该目录
-                _clickDelayTimer?.Stop();
-                _pendingClickPath = null;
-                _pendingClickBorder = null;
                 ClearSelection();
                 _sidebarFolder = path;
                 BuildSidebarFolderList();
                 return;
             }
 
-            // 单击：立即高亮选中，并延迟尝试阅读（双击会取消该延迟）
+            // 单击：立即高亮选中并尝试阅读
             UpdateSelectedHighlight(border);
-            _pendingClickPath = path;
-            _pendingClickBorder = border;
-            if (_clickDelayTimer == null)
-            {
-                _clickDelayTimer = new DispatcherTimer(
-                    TimeSpan.FromMilliseconds(GetDoubleClickTime()),
-                    DispatcherPriority.Input,
-                    ClickDelayTimer_Tick,
-                    Dispatcher);
-            }
-            _clickDelayTimer.Stop();
-            _clickDelayTimer.Start();
+            _ = OnSidebarFolderClick(path);
         };
 
         return border;
@@ -1039,20 +1025,6 @@ public partial class MainWindow : Window
         if (images.Count > 0)
             await OpenFolderAsync(path, updateSidebar: false);
     }
-
-    /// <summary>单击延迟定时器：超过双击时间窗后仍未双击，则执行“查看”动作。</summary>
-    private void ClickDelayTimer_Tick(object? sender, EventArgs e)
-    {
-        _clickDelayTimer!.Stop();
-        var path = _pendingClickPath;
-        _pendingClickPath = null;
-        _pendingClickBorder = null;
-        if (path != null)
-            _ = OnSidebarFolderClick(path);
-    }
-
-    [DllImport("user32.dll")]
-    private static extern uint GetDoubleClickTime();
 
     /// <summary>获取文件夹显示名（磁盘用 "C:\"，文件夹用名称）。</summary>
     private static string GetDisplayName(string path)
