@@ -94,22 +94,17 @@ public partial class MainWindow : Window
             if (folder != null)
             {
                 // 阅读图片所在目录，但左侧目录显示其「上一级」（父目录），
-                // 并高亮当前目录，而非直接钻入。
-                await OpenFolderAsync(folder, updateSidebar: false);
+                // 并高亮当前目录，而非直接钻入。startFile 之前的文件会被丢弃，
+                // 目标文件即成为列表第 0 页。
+                await OpenFolderAsync(folder, updateSidebar: false, startFile: args[1]);
                 _sidebarFolder = Directory.GetParent(folder)?.FullName;
                 _selectedPath = folder;
                 BuildSidebarFolderList();
                 SelectSidebarItem(folder);
 
-                var file = args[1];
-                var idx = _imageFiles.FindIndex(f =>
-                    string.Equals(f, file, StringComparison.OrdinalIgnoreCase));
-                if (idx >= 0)
-                {
-                    _currentImageIndex = idx;
-                    if (_config.Mode == ViewMode.Image)
-                        await ShowImageAsync(idx);
-                }
+                _currentImageIndex = 0;
+                if (_config.Mode == ViewMode.Image)
+                    await ShowImageAsync(0);
                 return;
             }
         }
@@ -274,10 +269,20 @@ public partial class MainWindow : Window
     /// 打开文件夹用于查看图片（右侧显示）。<paramref name="updateSidebar"/> 控制是否
     /// 同步更新左侧侧栏位置（单击查看时传 false，避免改变左侧列表）。
     /// </summary>
-    private async Task OpenFolderAsync(string folder, bool updateSidebar = true)
+    private async Task OpenFolderAsync(string folder, bool updateSidebar = true, string? startFile = null)
     {
         _currentFolder = folder;
         _imageFiles = FolderNavigationService.ListImages(folder);
+
+        // 指定起始文件时，丢弃它前面的所有文件，把目标文件当作第 0 页，
+        // 避免为定位而预计算前面所有图片高度（慢）或滚动偏移计算导致闪回首页。
+        if (startFile != null)
+        {
+            var idx = _imageFiles.FindIndex(f =>
+                string.Equals(f, startFile, StringComparison.OrdinalIgnoreCase));
+            if (idx > 0)
+                _imageFiles = _imageFiles.GetRange(idx, _imageFiles.Count - idx);
+        }
 
         // 更换内容前先断开滚动监听并归零滚动位置，避免旧滚动偏移（常在末页）
         // 在清空/重建期间触发 ScrollChanged，把新漫画误加载到末尾再跳回开头。
@@ -1153,11 +1158,11 @@ public partial class MainWindow : Window
                     var dir = Path.GetDirectoryName(path);
                     if (dir != null)
                     {
-                        await OpenFolderAsync(dir);
-                        var idx = _imageFiles.FindIndex(f =>
-                            string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
-                        if (idx >= 0)
-                            _ = ShowImageAsync(idx);
+                        // 打开时丢弃目标文件前面的文件（从该文件开始，不回头）。
+                        await OpenFolderAsync(dir, updateSidebar: true, startFile: path);
+                        _currentImageIndex = 0;
+                        if (_config.Mode == ViewMode.Image)
+                            _ = ShowImageAsync(0);
                     }
                 }
             }
