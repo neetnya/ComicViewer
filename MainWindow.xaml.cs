@@ -40,6 +40,10 @@ public partial class MainWindow : Window
     private const double ScrollFriction = 0.90;
     private const double MaxScrollVelocity = 120000;
 
+    // 上一次渲染帧记录的稳定滚动上限（ExtentHeight - ViewportHeight）。
+    // 用于高度未算全期间限制滚动，防止跳回首页。-1 表示尚未记录。
+    private double _lastStableMax = -1;
+
     // 侧栏单击选中高亮：记录当前选中项，用于单击视觉反馈。
     private string? _selectedPath;
     private Border? _selectedBorder;
@@ -203,6 +207,14 @@ public partial class MainWindow : Window
                 HandleLeftClickAction();
                 e.Handled = true;
                 break;
+            case Key.Delete:
+                // 图片模式：删除当前图片（进入回收站）并自动下一张。
+                if (_config.Mode == ViewMode.Image)
+                {
+                    _ = DeleteCurrentImageAsync();
+                    e.Handled = true;
+                }
+                break;
         }
     }
 
@@ -252,6 +264,8 @@ public partial class MainWindow : Window
         bool showComic = mode == ViewMode.Comic;
         ComicScroll.Visibility = showComic ? Visibility.Visible : Visibility.Collapsed;
         ImagePanel.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
+        // 删除按钮仅在图片模式可用
+        BtnDelete.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
 
         if (save) ConfigService.Save(_config);
 
@@ -292,6 +306,9 @@ public partial class MainWindow : Window
         _comicItems.Clear();
         _currentImageIndex = 0;
         _comicCurrentPage = 0;
+        _lastStableMax = -1;
+        _lastReleaseOffset = double.NaN;
+        TitleFileName.Text = "";
 
         // 侧栏是否跟随到当前文件夹
         if (updateSidebar)
@@ -358,6 +375,8 @@ public partial class MainWindow : Window
             // 后台渐进：预读其余图片尺寸 + 加载首屏附近前几张（不阻塞首屏）。
             _ = PrecomputeHeightsAsync(displayWidth);
             _ = LoadNearbyPagesAsync(decodeWidth);
+
+            UpdateCurrentFileName();
         }
         else
         {
@@ -374,6 +393,8 @@ public partial class MainWindow : Window
             _comicCurrentPage = 0;
             await Dispatcher.InvokeAsync(
                 () => ScrollComicToIndex(startIndex), DispatcherPriority.Loaded);
+
+            UpdateCurrentFileName();
         }
     }
 
@@ -388,6 +409,13 @@ public partial class MainWindow : Window
     }
 
     private int _comicCurrentPage;
+
+    // 上次离屏回收时记录的滚动偏移，用于节流：滚动偏移变化超过阈值才回收一次，
+    // 避免惯性滚动每帧都全量遍历全部图片项触发 PropertyChanged。
+    private double _lastReleaseOffset = double.NaN;
+
+    /// <summary>离屏回收节流阈值（像素）：滚动偏移变化超过该值才执行一次回收。</summary>
+    private const double ReleaseThrottlePixels = 300.0;
 
     /// <summary>漫画模式相邻图片项的垂直间距（Image 的 Margin="0,2" 上下各 2px）。</summary>
     private const double ItemVerticalGap = 4.0;
@@ -478,6 +506,9 @@ public partial class MainWindow : Window
         if (scroll.ViewportHeight <= 0) return;
         _comicCurrentPage = (int)(scroll.VerticalOffset / scroll.ViewportHeight);
 
+        // 滚动时同步更新顶栏当前文件名（按"图片起始"判定）。
+        UpdateCurrentFileName();
+
         // 异步加载附近的图片（解码宽度为显示宽度 1.5 倍）
         var decodeWidth = (int)(GetComicDisplayWidth() * 1.5);
         if (decodeWidth < 50) decodeWidth = 50;
@@ -491,7 +522,15 @@ public partial class MainWindow : Window
         var last = Math.Min(_comicItems.Count - 1, center + down);
 
         // 先回收离屏图片，再并发加载窗口内缺失的图片（不逐张 await 排队）。
-        ReleaseDistantComicSources(first, last);
+        // 节流：仅在滚动偏移变化超过阈值时才全量遍历回收，避免惯性滚动每帧
+        // 都遍历全部 2000+ 项并触发大量 PropertyChanged（持续高 CPU 的主因之一）。
+        var offset = scroll.VerticalOffset;
+        if (double.IsNaN(_lastReleaseOffset) ||
+            Math.Abs(offset - _lastReleaseOffset) >= ReleaseThrottlePixels)
+        {
+            ReleaseDistantComicSources(first, last);
+            _lastReleaseOffset = offset;
+        }
 
         var tasks = new List<Task>();
         for (var i = first; i <= last; i++)
@@ -623,6 +662,7 @@ public partial class MainWindow : Window
         ImageScale.ScaleY = 1.0;
 
         UpdateStatus();
+        UpdateCurrentFileName();
     }
 
     private void UpdateStatus()
@@ -634,6 +674,105 @@ public partial class MainWindow : Window
             if (!_isFullscreen)
                 StatusBar.Visibility = Visibility.Visible;
         }
+    }
+
+    /// <summary>删除按钮点击：图片模式删除当前图片（进入回收站）。</summary>
+    private void BtnDelete_OnClick(object sender, RoutedEventArgs e) =>
+        _ = DeleteCurrentImageAsync();
+
+    /// <summary>
+    /// 图片模式：删除当前图片到回收站，并自动进入下一张。
+    /// 末张删除后进入上一张；若删空则清空显示。
+    /// </summary>
+    private async Task DeleteCurrentImageAsync()
+    {
+        if (_config.Mode != ViewMode.Image) return;
+        if (_imageFiles.Count == 0 || _currentImageIndex < 0 ||
+            _currentImageIndex >= _imageFiles.Count) return;
+
+        var path = _imageFiles[_currentImageIndex];
+        if (!File.Exists(path)) return;
+
+        // 删除到回收站（FO_DELETE + FOF_ALLOWUNDO），失败则直接删除。
+        if (!RecycleFile(path))
+        {
+            try { File.Delete(path); }
+            catch { StatusText.Text = "删除失败"; return; }
+        }
+
+        _imageFiles.RemoveAt(_currentImageIndex);
+
+        // 末张被删：回退到上一张（若还有），否则显示空。
+        if (_currentImageIndex >= _imageFiles.Count)
+            _currentImageIndex = _imageFiles.Count - 1;
+
+        if (_imageFiles.Count == 0)
+        {
+            SingleImage.Source = null;
+            TitleFileName.Text = "";
+            StatusText.Text = "无图片";
+            return;
+        }
+
+        await ShowImageAsync(_currentImageIndex);
+    }
+
+    /// <summary>
+    /// 通过 Shell 把文件移动到回收站。成功返回 true，失败返回 false。
+    /// 使用 SHFileOperationW（FO_DELETE + FOF_ALLOWUNDO），删除可撤销、可进回收站。
+    /// </summary>
+    private static bool RecycleFile(string path)
+    {
+        var ops = new SHFILEOPSTRUCTW
+        {
+            wFunc = FO_DELETE,
+            pFrom = path + "\0\0",
+            fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        };
+        return SHFileOperationW(ref ops) == 0;
+    }
+
+    private const uint FO_DELETE = 0x0003;
+    private const ushort FOF_ALLOWUNDO = 0x0040;
+    private const ushort FOF_NOCONFIRMATION = 0x0010;
+    private const ushort FOF_SILENT = 0x0004;
+    private const ushort FOF_NOERRORUI = 0x0400;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEOPSTRUCTW
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        public string pFrom;
+        public string pTo;
+        public ushort fFlags;
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        public string lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int SHFileOperationW(ref SHFILEOPSTRUCTW lpFileOp);
+
+    /// <summary>
+    /// 更新顶栏居中的当前图片文件名。
+    /// 图片模式：当前张文件名。漫画模式：按"图片起始"判定——视口顶部落入
+    /// 哪张图片的累计区间，就显示哪张（例如同时显示 p3 后半 + p4 前半时显示 p4）。
+    /// </summary>
+    private void UpdateCurrentFileName()
+    {
+        if (_config.Mode == ViewMode.Image)
+        {
+            if (_imageFiles.Count > 0 && _currentImageIndex < _imageFiles.Count)
+                TitleFileName.Text = Path.GetFileName(_imageFiles[_currentImageIndex]);
+            else
+                TitleFileName.Text = "";
+            return;
+        }
+
+        if (_comicItems.Count == 0) { TitleFileName.Text = ""; return; }
+        var idx = GetComicCurrentImageIndex();
+        TitleFileName.Text = Path.GetFileName(_comicItems[idx].Path);
     }
 
     #endregion
@@ -800,6 +939,16 @@ public partial class MainWindow : Window
         var current = ComicScroll.VerticalOffset;
         var max = ComicScroll.ExtentHeight - ComicScroll.ViewportHeight;
         if (max < 0) max = 0;
+
+        // 边界保护：占位高度仍在后台逐步补齐时，ExtentHeight 会不断增长；
+        // 若把滚动推进到当前 ExtentHeight 之外，虚拟化面板会钳制偏移并可能
+        // 直接跳回顶部（表现为"看着看着重置回第一页"）。此处用「上一次渲染帧
+        // 记录的稳定上限」限制本帧位移，待高度补齐后再放开。
+        if (current > max) max = current;
+        if (_lastStableMax < 0 || max >= _lastStableMax)
+            _lastStableMax = max;
+        else
+            max = _lastStableMax;
 
         // 速度以“像素/秒”为单位，乘以帧间隔得到本帧位移
         var next = current + _scrollVelocity * dt;

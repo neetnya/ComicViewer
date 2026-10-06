@@ -65,7 +65,10 @@ public static class ImageLoaderService
     }
 
     /// <summary>
-    /// 获取图片原始尺寸（宽高，像素），不加载整张到内存。
+    /// 获取图片原始尺寸（宽高，像素），只解析文件头、不把像素数据解码进内存。
+    /// 使用 <see cref="BitmapCreateOptions.DelayCreation"/> 推迟像素解码，仅读取
+    /// <see cref="BitmapFrame.PixelWidth"/>/<see cref="BitmapFrame.PixelHeight"/> 元数据，
+    /// 避免为计算占位高度而把整张图完整解码（大文件夹下这是 CPU 占用飙升的主因）。
     /// </summary>
     public static SizeInt GetPixelSize(string path)
     {
@@ -74,8 +77,8 @@ public static class ImageLoaderService
             using var stream = new FileStream(path, FileMode.Open,
                 FileAccess.Read, FileShare.Read);
             var decoder = BitmapDecoder.Create(stream,
-                BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
+                BitmapCreateOptions.DelayCreation,
+                BitmapCacheOption.None);
             var frame = decoder.Frames[0];
             return new SizeInt(frame.PixelWidth, frame.PixelHeight);
         }

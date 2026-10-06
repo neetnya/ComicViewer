@@ -146,17 +146,30 @@
                 Height="34" VerticalAlignment="Top"
                 Panel.ZIndex="20"
                 MouseLeftButtonDown="TopBar_OnMouseLeftButtonDown">
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                        VerticalAlignment="Center" Margin="0,0,6,0">
-                <Button x:Name="BtnToggleMode" Width="110" Height="26"
-                        Margin="4,0" Content="图片模式"
-                        Style="{StaticResource TopButton}"
-                        Click="BtnToggleMode_OnClick"/>
-                <Button x:Name="BtnSettings" Width="70" Height="26"
-                        Margin="4,0" Content="设置"
-                        Style="{StaticResource TopButton}"
-                        Click="BtnSettings_OnClick"/>
-            </StackPanel>
+            <Grid>
+                <!-- 居中显示当前图片文件名（漫画模式按"图片起始"判定，图片模式为当前张） -->
+                <TextBlock x:Name="TitleFileName"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="#eee" FontSize="13"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="120,0"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center" Margin="0,0,6,0">
+                    <Button x:Name="BtnDelete" Width="70" Height="26"
+                            Margin="4,0" Content="删除"
+                            Style="{StaticResource TopButton}"
+                            Visibility="Collapsed"
+                            Click="BtnDelete_OnClick"/>
+                    <Button x:Name="BtnToggleMode" Width="110" Height="26"
+                            Margin="4,0" Content="图片模式"
+                            Style="{StaticResource TopButton}"
+                            Click="BtnToggleMode_OnClick"/>
+                    <Button x:Name="BtnSettings" Width="70" Height="26"
+                            Margin="4,0" Content="设置"
+                            Style="{StaticResource TopButton}"
+                            Click="BtnSettings_OnClick"/>
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- 主内容区 -->
