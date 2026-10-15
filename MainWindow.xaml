@@ -258,12 +258,67 @@
                         Style="{StaticResource TopButton}"
                         HorizontalContentAlignment="Left"
                         Click="BtnUp_OnClick"/>
-                <ScrollViewer x:Name="SidebarScroll" Grid.Row="2"
-                              VerticalScrollBarVisibility="Auto"
-                              HorizontalScrollBarVisibility="Disabled"
-                              Background="Transparent" Focusable="False">
-                    <StackPanel x:Name="FolderList" Orientation="Vertical"/>
-                </ScrollViewer>
+                <ListBox x:Name="FolderListBox" Grid.Row="2"
+                         Background="Transparent" BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ScrollViewer.VerticalScrollBarVisibility="Auto"
+                         VirtualizingPanel.IsVirtualizing="True"
+                         VirtualizingPanel.VirtualizationMode="Recycling"
+                         VirtualizingPanel.ScrollUnit="Pixel"
+                         Focusable="False"
+                         PreviewMouseLeftButtonDown="FolderListBox_OnPreviewMouseLeftButtonDown">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Focusable" Value="False"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="Padding" Value="10,6"/>
+                            <Setter Property="Margin" Value="2,1"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                            <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="Background" Value="Transparent"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="Bd"
+                                                Background="{TemplateBinding Background}"
+                                                Padding="{TemplateBinding Padding}"
+                                                Margin="{TemplateBinding Margin}">
+                                            <ContentPresenter/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#3a3a3a"/>
+                                            </Trigger>
+                                            <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#33506d"/>
+                                            </DataTrigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="Bd" Property="Background" Value="#556888"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Name}"
+                                           Foreground="White" FontSize="13"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding CountText}"
+                                           Foreground="#888" FontSize="12"
+                                           Margin="8,0,0,0"/>
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
             </Grid>
         </Border>
 

@@ -44,12 +44,9 @@ public partial class MainWindow : Window
     // 用于高度未算全期间限制滚动，防止跳回首页。-1 表示尚未记录。
     private double _lastStableMax = -1;
 
-    // 侧栏单击选中高亮：记录当前选中项，用于单击视觉反馈。
+    // 侧栏单击选中：记录当前选中路径（返回上一级、末页跳转同步选中）。
     private string? _selectedPath;
-    private Border? _selectedBorder;
-
-    // 路径 → 目录项 Border 映射，便于按路径定位并高亮（返回上一级、末页跳转同步选中）。
-    private readonly Dictionary<string, Border> _sidebarItems = new(StringComparer.OrdinalIgnoreCase);
+    private List<FolderListEntry> _folderEntries = [];
 
     // 侧栏/顶栏自动隐藏：鼠标位置定时器。
     private DispatcherTimer? _sidebarHideTimer;
@@ -1254,136 +1251,77 @@ public partial class MainWindow : Window
     /// </summary>
     private void BuildSidebarFolderList()
     {
-        FolderList.Children.Clear();
-        _sidebarItems.Clear();
-        // 列表重建后，旧选中项的视觉引用失效，需重置。
-        _selectedBorder = null;
-
-        // 标题：显示当前侧栏所在目录
         SidebarTitle.Text = _sidebarFolder == null
             ? "计算机"
             : GetDisplayName(_sidebarFolder);
 
-        // "返回上一级"按钮可用性
         BtnUp.IsEnabled = _sidebarFolder != null;
 
-        List<string> dirs;
-        if (_sidebarFolder == null)
-        {
-            dirs = FolderNavigationService.ListLogicalDrives();
-        }
-        else
-        {
-            dirs = FolderNavigationService.ListSubFolders(_sidebarFolder);
-        }
+        List<string> dirs = _sidebarFolder == null
+            ? FolderNavigationService.ListLogicalDrives()
+            : FolderNavigationService.ListSubFolders(_sidebarFolder);
 
-        foreach (var dir in dirs)
+        var countInParent = _sidebarFolder == null;
+        _folderEntries = dirs.Select(dir =>
         {
-            var name = GetDisplayName(dir);
-            var isCurrent = _currentFolder != null &&
-                string.Equals(dir, _currentFolder, StringComparison.OrdinalIgnoreCase);
-            var item = CreateFolderListItem(name, dir, isCurrent);
-            FolderList.Children.Add(item);
-            _sidebarItems[dir] = item;
-        }
-
-        // 重建后若有应保持选中的目录，恢复高亮（返回上一级时选中刚离开的子目录）。
-        if (_selectedPath != null && _sidebarItems.TryGetValue(_selectedPath, out var selected))
-        {
-            _selectedBorder = selected;
-            _selectedBorder.Background = GetSelectedBrush();
-        }
-    }
-
-    /// <summary>创建侧栏目录项（支持单击/双击）。</summary>
-    private Border CreateFolderListItem(string text, string path, bool isCurrent)
-    {
-        var tb = new TextBlock
-        {
-            Text = text,
-            Foreground = Brushes.White,
-            FontSize = 13,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-        };
-
-        var border = new Border
-        {
-            Child = tb,
-            Padding = new Thickness(10, 6, 10, 6),
-            Margin = new Thickness(2, 1, 2, 1),
-            Background = isCurrent
-                ? new SolidColorBrush(Color.FromRgb(0x33, 0x50, 0x6d))
-                : Brushes.Transparent,
-            Tag = path,
-            Cursor = Cursors.Hand,
-        };
-
-        // 单击：选中高亮 + 立即阅读该目录（加载其图片）；双击：进入该目录（侧栏显示其下一级）。
-        // 用 MouseLeftButtonDown 检测（ClickCount 可靠），并立刻标记 Handled，
-        // 防止事件继续冒泡到窗口而误触右侧翻页。单击立即响应，不再等待双击时间窗。
-        border.MouseLeftButtonDown += (_, e) =>
-        {
-            e.Handled = true;
-
-            if (e.ClickCount >= 2)
+            var count = countInParent ? 0 : FolderNavigationService.CountImages(dir);
+            return new FolderListEntry
             {
-                // 双击：进入该目录
-                ClearSelection();
-                _sidebarFolder = path;
-                BuildSidebarFolderList();
-                return;
-            }
+                Path = dir,
+                Name = GetDisplayName(dir),
+                CountText = count > 0 ? count.ToString() : "",
+                IsCurrent = _currentFolder != null &&
+                    string.Equals(dir, _currentFolder, StringComparison.OrdinalIgnoreCase),
+            };
+        }).ToList();
 
-            // 单击：立即高亮选中并尝试阅读
-            UpdateSelectedHighlight(border);
-            _ = OnSidebarFolderClick(path);
-        };
-
-        return border;
+        FolderListBox.ItemsSource = _folderEntries;
+        SelectSidebarItem(_selectedPath);
     }
 
-    /// <summary>清除侧栏选中高亮。</summary>
-    private void ClearSelection()
+    private void FolderListBox_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (_selectedBorder != null)
-            _selectedBorder.Background = Brushes.Transparent;
-        _selectedPath = null;
-        _selectedBorder = null;
+        if (e.OriginalSource is not DependencyObject d) return;
+        var container = ItemsControl.ContainerFromElement(FolderListBox, d) as ListBoxItem;
+        if (container?.DataContext is not FolderListEntry entry) return;
+
+        // 立刻标记 Handled，防止冒泡到窗口误触右侧翻页。
+        e.Handled = true;
+
+        if (e.ClickCount >= 2)
+        {
+            _selectedPath = null;
+            FolderListBox.SelectedItem = null;
+            _sidebarFolder = entry.Path;
+            BuildSidebarFolderList();
+            return;
+        }
+
+        FolderListBox.SelectedItem = entry;
+        _selectedPath = entry.Path;
+        _ = OnSidebarFolderClick(entry.Path);
     }
 
     /// <summary>按路径选中并高亮侧栏目录项（用于返回上一级、末页跳转同步选中）。</summary>
     private void SelectSidebarItem(string? path)
     {
-        // 还原旧选中项背景
-        if (_selectedBorder != null && _selectedBorder.Tag is string oldPath &&
-            !string.Equals(oldPath, path, StringComparison.OrdinalIgnoreCase))
-        {
-            _selectedBorder.Background = Brushes.Transparent;
-        }
-
         _selectedPath = path;
-        _selectedBorder = null;
-        if (path != null && _sidebarItems.TryGetValue(path, out var border))
+        FolderListEntry? match = null;
+        if (path != null)
         {
-            _selectedBorder = border;
-            _selectedBorder.Background = GetSelectedBrush();
+            match = _folderEntries.Find(x =>
+                string.Equals(x.Path, path, StringComparison.OrdinalIgnoreCase));
+        }
+        FolderListBox.SelectedItem = match;
+        if (match != null)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (ReferenceEquals(FolderListBox.SelectedItem, match))
+                    FolderListBox.ScrollIntoView(match);
+            }, DispatcherPriority.Loaded);
         }
     }
-
-    /// <summary>更新单击选中高亮：还原旧项背景、高亮新项。</summary>
-    private void UpdateSelectedHighlight(Border? newBorder)
-    {
-        if (_selectedBorder != null && !ReferenceEquals(_selectedBorder, newBorder))
-            _selectedBorder.Background = Brushes.Transparent;
-        _selectedBorder = newBorder;
-        _selectedPath = newBorder == null ? null : (string?)newBorder.Tag;
-        if (newBorder != null)
-            newBorder.Background = GetSelectedBrush();
-    }
-
-    /// <summary>选中项高亮背景色。</summary>
-    private static Brush GetSelectedBrush() =>
-        new SolidColorBrush(Color.FromRgb(0x55, 0x68, 0x88));
 
     /// <summary>
     /// 侧栏单击目录：尝试阅读该目录（仅查当前目录自身图片，不递归更深子目录）。
@@ -1529,6 +1467,15 @@ public partial class MainWindow : Window
     }
 
     #endregion
+}
+
+/// <summary>侧栏本层目录项。</summary>
+internal sealed class FolderListEntry
+{
+    public string Path { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string CountText { get; init; } = "";
+    public bool IsCurrent { get; init; }
 }
 
 /// <summary>

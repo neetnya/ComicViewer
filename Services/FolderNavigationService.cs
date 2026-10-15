@@ -43,6 +43,30 @@ public static class FolderNavigationService
         }
     }
 
+    /// <summary>
+    /// 统计文件夹内图片数量（不递归、不排序），供侧栏显示张数。
+    /// </summary>
+    public static int CountImages(string folder)
+    {
+        if (!Directory.Exists(folder))
+            return 0;
+
+        try
+        {
+            var n = 0;
+            foreach (var f in Directory.EnumerateFiles(folder))
+            {
+                if (!IsHidden(f) && IsImageFile(f))
+                    n++;
+            }
+            return n;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     /// <summary>判断路径是否为隐藏（含系统）。</summary>
     public static bool IsHidden(string path)
     {
