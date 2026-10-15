@@ -1040,13 +1040,13 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>漫画模式：左键平滑滚一页（约一屏高度）。</summary>
-    private void ScrollComicByOnePage()
+    /// <summary>漫画模式：平滑滚一页（约一屏高度）。direction 为 1 向下、为 -1 向上。</summary>
+    private void ScrollComicByOnePage(int direction = 1)
     {
         var step = ComicScroll.ViewportHeight * 0.95;
         if (step <= 0) step = 300;
         // 给一个刚好滑行约一屏的惯性速度（像素/秒）
-        _scrollVelocity += step * (1 - ScrollFriction) * 60.0;
+        _scrollVelocity += direction * step * (1 - ScrollFriction) * 60.0;
         _scrollVelocity = Math.Clamp(_scrollVelocity, -MaxScrollVelocity, MaxScrollVelocity);
         StartScrollAnimation();
     }
@@ -1059,6 +1059,13 @@ public partial class MainWindow : Window
                >= ComicScroll.ExtentHeight - 5;
     }
 
+    /// <summary>漫画模式：是否已到第一页（滚动到顶部）。</summary>
+    private bool IsAtComicFirstPage()
+    {
+        if (_comicItems.Count == 0) return true;
+        return ComicScroll.VerticalOffset <= 5;
+    }
+
     #endregion
 
     #region 翻页与文件夹跳转
@@ -1066,6 +1073,15 @@ public partial class MainWindow : Window
     private void GoNext()
     {
         if (_imageFiles.Count == 0) return;
+        if (_config.Mode == ViewMode.Comic)
+        {
+            if (IsAtComicLastPage())
+                _ = GoToNextSiblingFolderAsync();
+            else
+                ScrollComicByOnePage(1);
+            return;
+        }
+
         if (_currentImageIndex < _imageFiles.Count - 1)
         {
             _ = ShowImageAsync(_currentImageIndex + 1, _loadCts.Token);
@@ -1079,6 +1095,15 @@ public partial class MainWindow : Window
     private void GoPrev()
     {
         if (_imageFiles.Count == 0) return;
+        if (_config.Mode == ViewMode.Comic)
+        {
+            if (IsAtComicFirstPage())
+                _ = GoToPrevSiblingFolderAsync();
+            else
+                ScrollComicByOnePage(-1);
+            return;
+        }
+
         if (_currentImageIndex > 0)
         {
             _ = ShowImageAsync(_currentImageIndex - 1, _loadCts.Token);
