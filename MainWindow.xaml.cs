@@ -53,6 +53,7 @@ public partial class MainWindow : Window
 
     // 侧栏/顶栏自动隐藏：鼠标位置定时器。
     private DispatcherTimer? _sidebarHideTimer;
+    private DispatcherTimer? _toastTimer;
     private bool _sidebarHovering;
     private bool _topBarHovering;
 
@@ -141,6 +142,7 @@ public partial class MainWindow : Window
     private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
     {
         _sidebarHideTimer?.Stop();
+        _toastTimer?.Stop();
         CompositionTarget.Rendering -= ScrollAnim_Rendering;
         _loadCts.Cancel();
         _loadCts.Dispose();
@@ -354,9 +356,7 @@ public partial class MainWindow : Window
 
         if (_imageFiles.Count == 0)
         {
-            StatusText.Text = "无图片";
-            if (!_isFullscreen)
-                StatusBar.Visibility = Visibility.Visible;
+            ShowStatus("无图片");
             return;
         }
 
@@ -759,6 +759,36 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 窗口模式写入右下角状态栏；全屏时改为底部短暂提示，不把状态栏常驻回来。
+    /// </summary>
+    private void ShowStatus(string message)
+    {
+        StatusText.Text = message;
+        if (_isFullscreen)
+        {
+            ToastText.Text = message;
+            ToastBar.Visibility = Visibility.Visible;
+            if (_toastTimer == null)
+            {
+                _toastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1600) };
+                _toastTimer.Tick += ToastTimer_Tick;
+            }
+            _toastTimer.Stop();
+            _toastTimer.Start();
+        }
+        else
+        {
+            StatusBar.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void ToastTimer_Tick(object? sender, EventArgs e)
+    {
+        _toastTimer?.Stop();
+        ToastBar.Visibility = Visibility.Collapsed;
+    }
+
     /// <summary>删除按钮点击：图片模式删除当前图片（进入回收站）。</summary>
     private void BtnDelete_OnClick(object sender, RoutedEventArgs e) =>
         _ = DeleteCurrentImageAsync();
@@ -780,7 +810,7 @@ public partial class MainWindow : Window
         if (!RecycleFile(path))
         {
             try { File.Delete(path); }
-            catch { StatusText.Text = "删除失败"; return; }
+            catch { ShowStatus("删除失败"); return; }
         }
 
         _imageFiles.RemoveAt(_currentImageIndex);
@@ -793,7 +823,7 @@ public partial class MainWindow : Window
         {
             SingleImage.Source = null;
             TitleFileName.Text = "";
-            StatusText.Text = "无图片";
+            ShowStatus("无图片");
             return;
         }
 
@@ -1142,9 +1172,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            StatusText.Text = "已是最后一个文件夹";
-            if (!_isFullscreen)
-                StatusBar.Visibility = Visibility.Visible;
+            ShowStatus("已是最后一个文件夹");
         }
     }
 
@@ -1159,9 +1187,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            StatusText.Text = "已是第一个文件夹";
-            if (!_isFullscreen)
-                StatusBar.Visibility = Visibility.Visible;
+            ShowStatus("已是第一个文件夹");
         }
     }
 

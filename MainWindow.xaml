@@ -272,5 +272,16 @@
                 Visibility="Collapsed">
             <TextBlock x:Name="StatusText" Foreground="#eee" FontSize="12"/>
         </Border>
+
+        <!-- 全屏轻量提示：不恢复常驻状态栏，短暂显示后自动消失。 -->
+        <Border x:Name="ToastBar"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Panel.ZIndex="30"
+                Margin="0,0,0,48" Background="#CC000000"
+                CornerRadius="6" Padding="14,7"
+                Visibility="Collapsed"
+                IsHitTestVisible="False">
+            <TextBlock x:Name="ToastText" Foreground="#eee" FontSize="13"/>
+        </Border>
     </Grid>
 </Window>
