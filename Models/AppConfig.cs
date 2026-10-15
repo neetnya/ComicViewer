@@ -40,6 +40,28 @@ public class AppConfig
     /// <summary>漫画模式向下预加载页数（当前页之后预解码的页数）。</summary>
     public int PreloadDownCount { get; set; } = 5;
 
+    /// <summary>复制一份，供设置窗口在保存前独立编辑。</summary>
+    public AppConfig Clone() => new()
+    {
+        Mode = Mode,
+        ComicWidthRatio = ComicWidthRatio,
+        StartFullscreen = StartFullscreen,
+        ScrollStepPixels = ScrollStepPixels,
+        PreloadUpCount = PreloadUpCount,
+        PreloadDownCount = PreloadDownCount,
+    };
+
+    /// <summary>把另一份配置的可编辑字段写回自身。</summary>
+    public void CopyFrom(AppConfig other)
+    {
+        Mode = other.Mode;
+        ComicWidthRatio = other.ComicWidthRatio;
+        StartFullscreen = other.StartFullscreen;
+        ScrollStepPixels = other.ScrollStepPixels;
+        PreloadUpCount = other.PreloadUpCount;
+        PreloadDownCount = other.PreloadDownCount;
+    }
+
     /// <summary>支持的图片扩展名（小写，含点）。</summary>
     [JsonIgnore]
     public static readonly string[] ImageExtensions =

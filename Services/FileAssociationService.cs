@@ -92,6 +92,70 @@ public static class FileAssociationService
         }
     }
 
+    /// <summary>当前用户下是否已写入本软件的 ProgId 打开命令。</summary>
+    public static bool IsRegistered()
+    {
+        try
+        {
+            using var cmd = Registry.CurrentUser.OpenSubKey(
+                $@"Software\Classes\{ProgId}\shell\open\command");
+            var val = cmd?.GetValue(null) as string;
+            return !string.IsNullOrWhiteSpace(val);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 移除本软件写入的 ProgId / 应用程序条目 / Capabilities。
+    /// 仅当扩展名当前仍指向本 ProgId 时才清掉默认值，避免误改用户其它关联。
+    /// </summary>
+    public static void Unregister()
+    {
+        foreach (var ext in ImageExtensions)
+        {
+            try
+            {
+                using var extKey = Registry.CurrentUser.OpenSubKey(
+                    $@"Software\Classes\{ext}", writable: true);
+                if (extKey?.GetValue(null) as string == ProgId)
+                    extKey.DeleteValue("", throwOnMissingValue: false);
+            }
+            catch
+            {
+                // 单个扩展名失败不阻断其余清理
+            }
+        }
+
+        TryDeleteSubKeyTree($@"Software\Classes\{ProgId}");
+        TryDeleteSubKeyTree($@"Software\Classes\Applications\{ExeName}");
+        TryDeleteSubKeyTree(@"Software\ComicViewer");
+        try
+        {
+            using var regApps = Registry.CurrentUser.OpenSubKey(
+                @"Software\RegisteredApplications", writable: true);
+            regApps?.DeleteValue(AppName, throwOnMissingValue: false);
+        }
+        catch
+        {
+            // 静默：取消关联不应打断设置窗口
+        }
+    }
+
+    private static void TryDeleteSubKeyTree(string path)
+    {
+        try
+        {
+            Registry.CurrentUser.DeleteSubKeyTree(path, throwOnMissingSubKey: false);
+        }
+        catch
+        {
+            // 键不存在或无权限时忽略
+        }
+    }
+
     /// <summary>
     /// 注册关联并打开系统「默认应用」设置页，引导用户手动确认。
     /// </summary>
