@@ -28,8 +28,11 @@ public partial class MainWindow : Window
     // 漫画模式下的图片源数据列表（绑到 ItemsControl）。
     private readonly ObservableCollection<ComicImageItem> _comicItems = [];
 
-    // 图片模式：临时缩放（按住右键滚轮），不记忆。
+    // 图片模式：Ctrl+滚轮临时缩放（不记忆）；缩放后左键拖动平移。
     private double _imageTempZoom = 1.0;
+    private bool _imagePanning;
+    private bool _imageDragMoved;
+    private Point _panLast;
 
     // 漫画模式：平滑滚动（惯性滚动速度，像素/帧）
     private double _scrollVelocity;
@@ -313,9 +316,7 @@ public partial class MainWindow : Window
         if (save) ConfigService.Save(_config);
 
         // 重置临时缩放
-        _imageTempZoom = 1.0;
-        ImageScale.ScaleX = 1.0;
-        ImageScale.ScaleY = 1.0;
+        ResetImageZoomAndPan();
     }
 
     #endregion
@@ -789,9 +790,7 @@ public partial class MainWindow : Window
             SingleImage.StaticSource = bmp;
         }
 
-        _imageTempZoom = 1.0;
-        ImageScale.ScaleX = 1.0;
-        ImageScale.ScaleY = 1.0;
+        ResetImageZoomAndPan();
 
         UpdateStatus();
         UpdateCurrentFileName();
@@ -951,8 +950,46 @@ public partial class MainWindow : Window
         base.OnMouseLeftButtonDown(e);
         if (IsOverInteractiveControl(e)) return;
 
+        // 缩放后左键按下先进入拖拽；若没有移动，抬起时再翻页。
+        if (_config.Mode == ViewMode.Image && Math.Abs(_imageTempZoom - 1.0) > 0.02)
+        {
+            _imagePanning = true;
+            _imageDragMoved = false;
+            _panLast = e.GetPosition(this);
+            CaptureMouse();
+            e.Handled = true;
+            return;
+        }
+
         HandleLeftClickAction();
         e.Handled = true;
+    }
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        if (_imagePanning)
+        {
+            var clicked = !_imageDragMoved;
+            _imagePanning = false;
+            _imageDragMoved = false;
+            if (IsMouseCaptured)
+                ReleaseMouseCapture();
+            if (clicked)
+                HandleLeftClickAction();
+            e.Handled = true;
+        }
+        base.OnMouseLeftButtonUp(e);
+    }
+
+    private void ResetImageZoomAndPan()
+    {
+        _imageTempZoom = 1.0;
+        _imagePanning = false;
+        _imageDragMoved = false;
+        ImageScale.ScaleX = 1.0;
+        ImageScale.ScaleY = 1.0;
+        ImagePan.X = 0;
+        ImagePan.Y = 0;
     }
 
     /// <summary>
@@ -1051,6 +1088,11 @@ public partial class MainWindow : Window
                 _imageTempZoom = Math.Clamp(_imageTempZoom + delta, 0.2, 8.0);
                 ImageScale.ScaleX = _imageTempZoom;
                 ImageScale.ScaleY = _imageTempZoom;
+                if (Math.Abs(_imageTempZoom - 1.0) < 0.02)
+                {
+                    ImagePan.X = 0;
+                    ImagePan.Y = 0;
+                }
             }
             e.Handled = true;
             return;
@@ -1369,6 +1411,18 @@ public partial class MainWindow : Window
 
     private void MainWindow_OnMouseMove(object sender, MouseEventArgs e)
     {
+        if (_imagePanning)
+        {
+            var now = e.GetPosition(this);
+            var dx = now.X - _panLast.X;
+            var dy = now.Y - _panLast.Y;
+            if (Math.Abs(dx) > 2 || Math.Abs(dy) > 2)
+                _imageDragMoved = true;
+            ImagePan.X += dx;
+            ImagePan.Y += dy;
+            _panLast = now;
+        }
+
         if (!_isFullscreen) return;
 
         var pos = e.GetPosition(this);

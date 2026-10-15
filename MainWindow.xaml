@@ -224,7 +224,10 @@
             <Grid x:Name="ImagePanel" Background="#1a1a1a"
                   RenderTransformOrigin="0.5,0.5">
                 <Grid.RenderTransform>
-                    <ScaleTransform x:Name="ImageScale"/>
+                    <TransformGroup>
+                        <ScaleTransform x:Name="ImageScale"/>
+                        <TranslateTransform x:Name="ImagePan"/>
+                    </TransformGroup>
                 </Grid.RenderTransform>
                 <local:AutoGifImage x:Name="SingleImage"
                        Stretch="Uniform"
