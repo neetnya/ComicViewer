@@ -19,15 +19,18 @@ public static class ImageLoaderService
     /// </summary>
     /// <param name="path">图片完整路径。</param>
     /// <param name="decodePixelWidth">解码宽度（0 表示不缩放，按原图）。</param>
-    /// <returns>BitmapSource，已冻结（可跨线程使用）。</returns>
-    public static Task<BitmapSource> LoadAsync(string path, int decodePixelWidth = 0)
+    /// <param name="cancellationToken">目录切换时取消，避免旧图写回新列表。</param>
+    /// <returns>BitmapSource，已冻结（可跨线程使用）；失败或取消时返回 null。</returns>
+    public static Task<BitmapSource?> LoadAsync(string path, int decodePixelWidth = 0,
+        CancellationToken cancellationToken = default)
     {
         return Task.Run(() =>
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!File.Exists(path))
-                    return null!;
+                    return null;
 
                 var ext = Path.GetExtension(path).ToLowerInvariant();
                 var isGif = ext == ".gif";
@@ -57,9 +60,13 @@ public static class ImageLoaderService
                 bmp.Freeze();
                 return bmp;
             }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
             catch
             {
-                return null!;
+                return null;
             }
         });
     }

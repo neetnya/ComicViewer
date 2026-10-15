@@ -56,6 +56,10 @@ public partial class MainWindow : Window
     private bool _sidebarHovering;
     private bool _topBarHovering;
 
+    // 打开目录 / 切本时递增，使进行中的解码结果作废，避免旧图写进新列表。
+    private CancellationTokenSource _loadCts = new();
+    private int _loadEpoch;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -108,7 +112,7 @@ public partial class MainWindow : Window
 
                 _currentImageIndex = 0;
                 if (_config.Mode == ViewMode.Image)
-                    await ShowImageAsync(0);
+                    await ShowImageAsync(0, _loadCts.Token);
                 return;
             }
         }
@@ -122,6 +126,8 @@ public partial class MainWindow : Window
     {
         _sidebarHideTimer?.Stop();
         CompositionTarget.Rendering -= ScrollAnim_Rendering;
+        _loadCts.Cancel();
+        _loadCts.Dispose();
         ConfigService.Save(_config);
     }
 
@@ -244,14 +250,14 @@ public partial class MainWindow : Window
         {
             // 漫画项列表缺失（此前一直在图片模式）时先重建，再定位到当前页
             if (_comicItems.Count != _imageFiles.Count)
-                await LoadComicModeAsync(currentIndex);
+                await LoadComicModeAsync(currentIndex, _loadCts.Token);
             else
                 ScrollComicToIndex(currentIndex);
         }
         else
         {
             _currentImageIndex = currentIndex;
-            await ShowImageAsync(currentIndex);
+            await ShowImageAsync(currentIndex, _loadCts.Token);
         }
     }
 
@@ -283,8 +289,21 @@ public partial class MainWindow : Window
     /// 打开文件夹用于查看图片（右侧显示）。<paramref name="updateSidebar"/> 控制是否
     /// 同步更新左侧侧栏位置（单击查看时传 false，避免改变左侧列表）。
     /// </summary>
+    /// <summary>取消进行中的解码，并开始新一轮加载世代。</summary>
+    private CancellationToken BeginNewLoad()
+    {
+        _loadCts.Cancel();
+        _loadCts.Dispose();
+        _loadCts = new CancellationTokenSource();
+        unchecked { _loadEpoch++; }
+        _scrollVelocity = 0;
+        _scrollAnimating = false;
+        return _loadCts.Token;
+    }
+
     private async Task OpenFolderAsync(string folder, bool updateSidebar = true, string? startFile = null)
     {
+        var ct = BeginNewLoad();
         _currentFolder = folder;
         _imageFiles = FolderNavigationService.ListImages(folder);
 
@@ -325,13 +344,15 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (ct.IsCancellationRequested) return;
+
         if (_config.Mode == ViewMode.Comic)
         {
-            await LoadComicModeAsync();
+            await LoadComicModeAsync(ct: ct);
         }
         else
         {
-            await ShowImageAsync(0);
+            await ShowImageAsync(0, ct);
         }
     }
 
@@ -339,7 +360,7 @@ public partial class MainWindow : Window
     /// 漫画模式：异步加载图片项。正常打开时立即显示首页，其余尺寸/图片在后台
     /// 渐进补齐（边看边加载），避免黑屏等待。
     /// </summary>
-    private async Task LoadComicModeAsync(int startIndex = 0)
+    private async Task LoadComicModeAsync(int startIndex = 0, CancellationToken ct = default)
     {
         // 加载/重建期间断开滚动监听，防止旧的滚动偏移触发乱序加载。
         ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
@@ -359,11 +380,15 @@ public partial class MainWindow : Window
             });
         }
 
+        if (ct.IsCancellationRequested) return;
+
         if (startIndex <= 0)
         {
             // 正常打开：只同步解码第一张立即显示，其余图片后台异步补齐，最大程度降低首屏卡顿。
             if (_comicItems.Count > 0)
-                await LoadComicItemAsync(0, decodeWidth);
+                await LoadComicItemAsync(0, decodeWidth, ct);
+
+            if (ct.IsCancellationRequested) return;
 
             // 归零滚动位置（清空后默认即顶部），挂上滚动监听按需懒加载。
             ComicScroll.ScrollToVerticalOffset(0);
@@ -373,18 +398,20 @@ public partial class MainWindow : Window
             _comicCurrentPage = 0;
 
             // 后台渐进：预读其余图片尺寸 + 加载首屏附近前几张（不阻塞首屏）。
-            _ = PrecomputeHeightsAsync(displayWidth);
-            _ = LoadNearbyPagesAsync(decodeWidth);
+            _ = PrecomputeHeightsAsync(displayWidth, ct);
+            _ = LoadNearbyPagesAsync(decodeWidth, ct);
 
             UpdateCurrentFileName();
         }
         else
         {
             // 模式切换：需先补齐高度，才能按累计高度准确定位到指定页。
-            await PrecomputeHeightsAsync(displayWidth);
+            await PrecomputeHeightsAsync(displayWidth, ct);
+            if (ct.IsCancellationRequested) return;
             for (var i = startIndex; i < Math.Min(startIndex + 3, _comicItems.Count); i++)
             {
-                await LoadComicItemAsync(i, decodeWidth);
+                await LoadComicItemAsync(i, decodeWidth, ct);
+                if (ct.IsCancellationRequested) return;
             }
 
             ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
@@ -399,12 +426,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>后台预加载首屏附近的前几张图片（从第 1 张起，不阻塞首屏）。</summary>
-    private async Task LoadNearbyPagesAsync(int decodeWidth)
+    private async Task LoadNearbyPagesAsync(int decodeWidth, CancellationToken ct = default)
     {
         var count = Math.Max(0, _config.PreloadDownCount) + 1;
         for (var i = 1; i < Math.Min(count, _comicItems.Count); i++)
         {
-            await LoadComicItemAsync(i, decodeWidth);
+            if (ct.IsCancellationRequested) return;
+            await LoadComicItemAsync(i, decodeWidth, ct);
         }
     }
 
@@ -454,43 +482,64 @@ public partial class MainWindow : Window
     /// 后台按顺序读取图片尺寸并计算占位高度。逐块（每块 16 张）在后台读取、
     /// 回到 UI 线程应用，使占位高度渐进补齐，避免一次性打开所有文件造成长时间黑屏。
     /// </summary>
-    private async Task PrecomputeHeightsAsync(double displayWidth)
+    private async Task PrecomputeHeightsAsync(double displayWidth, CancellationToken ct = default)
     {
         var items = _comicItems.ToList();
+        var epoch = _loadEpoch;
         const int chunkSize = 16;
         for (var start = 0; start < items.Count; start += chunkSize)
         {
+            if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
             var chunk = items.Skip(start).Take(chunkSize).ToList();
-            var heights = await Task.Run(() =>
+            double[] heights;
+            try
             {
-                var result = new double[chunk.Count];
-                for (var i = 0; i < chunk.Count; i++)
+                heights = await Task.Run(() =>
                 {
-                    var size = ImageLoaderService.GetPixelSize(chunk[i].Path);
-                    if (size.Width > 0 && size.Height > 0)
-                        result[i] = displayWidth * size.Height / size.Width;
-                }
-                return result;
-            });
+                    var result = new double[chunk.Count];
+                    for (var i = 0; i < chunk.Count; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var size = ImageLoaderService.GetPixelSize(chunk[i].Path);
+                        if (size.Width > 0 && size.Height > 0)
+                            result[i] = displayWidth * size.Height / size.Width;
+                    }
+                    return result;
+                }, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
 
             // 回到 UI 线程（await 后）再应用，保证 PropertyChanged 在主线程触发。
+            // 仅写回仍属于当前列表的同一对象，避免切本后改到已丢弃项或错位新项。
             for (var i = 0; i < chunk.Count; i++)
             {
-                if (heights[i] > 0)
+                if (heights[i] <= 0) continue;
+                var idx = start + i;
+                if (idx < _comicItems.Count && ReferenceEquals(_comicItems[idx], chunk[i]))
                     chunk[i].DisplayHeight = heights[i];
             }
         }
     }
 
     /// <summary>解码第 idx 张图片并设置 Source 与显示高度（按原始宽高比）。</summary>
-    private async Task LoadComicItemAsync(int idx, int decodeWidth)
+    private async Task LoadComicItemAsync(int idx, int decodeWidth, CancellationToken ct = default)
     {
         if (idx < 0 || idx >= _comicItems.Count) return;
         if (_comicItems[idx].Source != null) return;
 
         var item = _comicItems[idx];
-        var bmp = await ImageLoaderService.LoadAsync(item.Path, decodeWidth);
+        var path = item.Path;
+        var epoch = _loadEpoch;
+        var bmp = await ImageLoaderService.LoadAsync(path, decodeWidth, ct);
         if (bmp == null) return;
+        if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
+        if (idx >= _comicItems.Count || !ReferenceEquals(_comicItems[idx], item)) return;
+        if (!string.Equals(item.Path, path, StringComparison.OrdinalIgnoreCase)) return;
 
         // 若占位高度尚未算好，按解码结果补上
         if (item.DisplayHeight <= 0 && bmp.PixelWidth > 0 && bmp.PixelHeight > 0)
@@ -502,6 +551,7 @@ public partial class MainWindow : Window
 
     private async void ComicScroll_OnScrollChanged(object sender, ScrollChangedEventArgs e)
     {
+        if (_loadCts.IsCancellationRequested) return;
         var scroll = ComicScroll;
         if (scroll.ViewportHeight <= 0) return;
         _comicCurrentPage = (int)(scroll.VerticalOffset / scroll.ViewportHeight);
@@ -532,6 +582,8 @@ public partial class MainWindow : Window
             _lastReleaseOffset = offset;
         }
 
+        var ct = _loadCts.Token;
+        var epoch = _loadEpoch;
         var tasks = new List<Task>();
         for (var i = first; i <= last; i++)
         {
@@ -539,7 +591,7 @@ public partial class MainWindow : Window
             if (item.Source == null && item.Loading == false)
             {
                 item.Loading = true;
-                tasks.Add(LoadComicItemAsync(i, decodeWidth));
+                tasks.Add(LoadComicItemAsync(i, decodeWidth, ct));
             }
         }
 
@@ -547,6 +599,7 @@ public partial class MainWindow : Window
         if (tasks.Count > 0)
         {
             await Task.WhenAll(tasks);
+            if (epoch != _loadEpoch || ct.IsCancellationRequested) return;
             for (var i = first; i <= last; i++)
                 _comicItems[i].Loading = false;
         }
@@ -584,6 +637,8 @@ public partial class MainWindow : Window
     /// </summary>
     private async Task ApplyComicWidthAsync()
     {
+        var ct = _loadCts.Token;
+        var epoch = _loadEpoch;
         var displayWidth = GetComicDisplayWidth();
         var decodeWidth = (int)(displayWidth * 1.5);
         if (decodeWidth < 50) decodeWidth = 50;
@@ -599,7 +654,8 @@ public partial class MainWindow : Window
         }
 
         // 按新宽度重算占位高度。
-        await PrecomputeHeightsAsync(displayWidth);
+        await PrecomputeHeightsAsync(displayWidth, ct);
+        if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
 
         // 后台按新分辨率重新解码当前页附近，替换为更清晰版本。
         // 先置空旧 Source，避免新旧 BitmapSource 同时驻留造成内存峰值。
@@ -607,11 +663,15 @@ public partial class MainWindow : Window
              i <= Math.Min(_comicItems.Count - 1, currentIndex + 3);
              i++)
         {
+            if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
             var item = _comicItems[i];
+            var path = item.Path;
             item.Source = null;
-            var bmp = await ImageLoaderService.LoadAsync(item.Path, decodeWidth);
-            if (bmp != null)
-                item.Source = bmp;
+            var bmp = await ImageLoaderService.LoadAsync(path, decodeWidth, ct);
+            if (bmp == null) continue;
+            if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
+            if (i >= _comicItems.Count || !ReferenceEquals(_comicItems[i], item)) return;
+            item.Source = bmp;
         }
 
         // 布局稳定后回到当前页。
@@ -649,13 +709,20 @@ public partial class MainWindow : Window
 
     #region 图片模式
 
-    private async Task ShowImageAsync(int index)
+    private async Task ShowImageAsync(int index, CancellationToken ct = default)
     {
         if (index < 0 || index >= _imageFiles.Count) return;
         _currentImageIndex = index;
 
         var path = _imageFiles[index];
-        var bmp = await ImageLoaderService.LoadAsync(path, 0);
+        var epoch = _loadEpoch;
+        var bmp = await ImageLoaderService.LoadAsync(path, 0, ct);
+        if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
+        if (_currentImageIndex != index ||
+            index >= _imageFiles.Count ||
+            !string.Equals(_imageFiles[index], path, StringComparison.OrdinalIgnoreCase))
+            return;
+
         SingleImage.Source = bmp;
         _imageTempZoom = 1.0;
         ImageScale.ScaleX = 1.0;
@@ -714,7 +781,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await ShowImageAsync(_currentImageIndex);
+        await ShowImageAsync(_currentImageIndex, _loadCts.Token);
     }
 
     /// <summary>
@@ -1001,7 +1068,7 @@ public partial class MainWindow : Window
         if (_imageFiles.Count == 0) return;
         if (_currentImageIndex < _imageFiles.Count - 1)
         {
-            _ = ShowImageAsync(_currentImageIndex + 1);
+            _ = ShowImageAsync(_currentImageIndex + 1, _loadCts.Token);
         }
         else
         {
@@ -1014,7 +1081,7 @@ public partial class MainWindow : Window
         if (_imageFiles.Count == 0) return;
         if (_currentImageIndex > 0)
         {
-            _ = ShowImageAsync(_currentImageIndex - 1);
+            _ = ShowImageAsync(_currentImageIndex - 1, _loadCts.Token);
         }
         else
         {
@@ -1311,7 +1378,7 @@ public partial class MainWindow : Window
                         await OpenFolderAsync(dir, updateSidebar: true, startFile: path);
                         _currentImageIndex = 0;
                         if (_config.Mode == ViewMode.Image)
-                            _ = ShowImageAsync(0);
+                            _ = ShowImageAsync(0, _loadCts.Token);
                     }
                 }
             }
