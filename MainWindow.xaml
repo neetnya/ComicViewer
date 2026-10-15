@@ -177,48 +177,37 @@
 
         <!-- 主内容区 -->
         <Grid>
-            <!-- 漫画模式：ScrollViewer 必须在 ItemsControl 模板内，像素虚拟化才会生效。 -->
-            <ItemsControl x:Name="ComicList"
+            <!-- 漫画模式：连续垂直滚动列表，虚拟化保证流畅 -->
+            <ScrollViewer x:Name="ComicScroll"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Hidden"
                           Background="#1a1a1a"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          VirtualizingPanel.ScrollUnit="Pixel"
-                          VirtualizingPanel.CacheLength="1"
-                          VirtualizingPanel.CacheLengthUnit="Item">
-                <ItemsControl.Template>
-                    <ControlTemplate TargetType="ItemsControl">
-                        <ScrollViewer x:Name="ComicScroll"
-                                      VerticalScrollBarVisibility="Hidden"
-                                      HorizontalScrollBarVisibility="Hidden"
-                                      Background="#1a1a1a"
-                                      CanContentScroll="True"
-                                      PanningMode="VerticalOnly"
-                                      Focusable="False"
-                                      IsManipulationEnabled="False">
-                            <ItemsPresenter/>
-                        </ScrollViewer>
-                    </ControlTemplate>
-                </ItemsControl.Template>
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <VirtualizingStackPanel IsVirtualizing="True"
-                                                VirtualizationMode="Recycling"
-                                                Orientation="Vertical"/>
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <local:AutoGifImage GifPath="{Binding Path}"
-                                            StaticSource="{Binding Source}"
-                                            Width="{Binding DisplayWidth}"
-                                            Height="{Binding DisplayHeight}"
-                                            Stretch="Uniform"
-                                            HorizontalAlignment="Center"
-                                            RenderOptions.BitmapScalingMode="HighQuality"
-                                            Margin="0,2"/>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+                          CanContentScroll="True"
+                          PanningMode="VerticalOnly"
+                          Focusable="False"
+                          IsManipulationEnabled="False">
+                <ItemsControl x:Name="ComicList">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <VirtualizingStackPanel IsVirtualizing="True"
+                                                     VirtualizationMode="Recycling"
+                                                     Orientation="Vertical"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <local:AutoGifImage GifPath="{Binding Path}"
+                                                StaticSource="{Binding Source}"
+                                                Width="{Binding DisplayWidth}"
+                                                Height="{Binding DisplayHeight}"
+                                                Stretch="Uniform"
+                                                HorizontalAlignment="Center"
+                                                RenderOptions.BitmapScalingMode="HighQuality"
+                                                Margin="0,2"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
 
             <!-- 图片模式：单张显示，自适应 -->
             <Grid x:Name="ImagePanel" Background="#1a1a1a"
