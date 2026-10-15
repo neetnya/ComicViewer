@@ -60,16 +60,32 @@ public partial class MainWindow : Window
     private CancellationTokenSource _loadCts = new();
     private int _loadEpoch;
 
+    // 漫画列表的滚动容器（在 ItemsControl 模板内，Loaded 后通过 FindName 取得）。
+    private ScrollViewer ComicScroll = null!;
+
     public MainWindow()
     {
         InitializeComponent();
         ComicList.ItemsSource = _comicItems;
+        ComicList.Loaded += (_, _) => HookComicScroll();
+    }
+
+    /// <summary>
+    /// 从 ItemsControl 模板取出内部 ScrollViewer。
+    /// 必须放在控件模板内，VirtualizingStackPanel 才能按像素虚拟化。
+    /// </summary>
+    private void HookComicScroll()
+    {
+        ComicList.ApplyTemplate();
+        if (ComicList.Template.FindName("ComicScroll", ComicList) is ScrollViewer sv)
+            ComicScroll = sv;
     }
 
     #region 启动
 
     private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
+        HookComicScroll();
         _config = ConfigService.Load();
 
         // 启动侧栏隐藏定时器（全屏时鼠标移开自动隐藏）
@@ -268,7 +284,7 @@ public partial class MainWindow : Window
         BtnToggleMode.Content = mode == ViewMode.Comic ? "图片模式" : "漫画模式";
 
         bool showComic = mode == ViewMode.Comic;
-        ComicScroll.Visibility = showComic ? Visibility.Visible : Visibility.Collapsed;
+        ComicList.Visibility = showComic ? Visibility.Visible : Visibility.Collapsed;
         ImagePanel.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
         // 删除按钮仅在图片模式可用
         BtnDelete.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
@@ -991,7 +1007,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ScrollAnim_Rendering(object? sender, EventArgs e)
     {
-        if (!_scrollAnimating) return;
+        if (!_scrollAnimating || ComicScroll == null) return;
 
         var now = DateTime.UtcNow;
         var dt = (now - _lastScrollTick).TotalSeconds;
