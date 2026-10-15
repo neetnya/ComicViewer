@@ -551,6 +551,27 @@ public partial class MainWindow : Window
         var item = _comicItems[idx];
         var path = item.Path;
         var epoch = _loadEpoch;
+        if (IsGifPath(path))
+        {
+            if (item.DisplayHeight <= 0)
+            {
+                SizeInt size;
+                try
+                {
+                    size = await Task.Run(() => ImageLoaderService.GetPixelSize(path), ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
+                if (idx >= _comicItems.Count || !ReferenceEquals(_comicItems[idx], item)) return;
+                if (size.Width > 0 && size.Height > 0)
+                    item.DisplayHeight = item.DisplayWidth * size.Height / size.Width;
+            }
+            return;
+        }
+
         var bmp = await ImageLoaderService.LoadAsync(path, decodeWidth, ct);
         if (bmp == null) return;
         if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
@@ -682,6 +703,7 @@ public partial class MainWindow : Window
             if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
             var item = _comicItems[i];
             var path = item.Path;
+            if (IsGifPath(path)) continue;
             item.Source = null;
             var bmp = await ImageLoaderService.LoadAsync(path, decodeWidth, ct);
             if (bmp == null) continue;
@@ -732,14 +754,22 @@ public partial class MainWindow : Window
 
         var path = _imageFiles[index];
         var epoch = _loadEpoch;
-        var bmp = await ImageLoaderService.LoadAsync(path, 0, ct);
-        if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
-        if (_currentImageIndex != index ||
-            index >= _imageFiles.Count ||
-            !string.Equals(_imageFiles[index], path, StringComparison.OrdinalIgnoreCase))
-            return;
+        SingleImage.GifPath = path;
+        if (IsGifPath(path))
+        {
+            SingleImage.StaticSource = null;
+        }
+        else
+        {
+            var bmp = await ImageLoaderService.LoadAsync(path, 0, ct);
+            if (ct.IsCancellationRequested || epoch != _loadEpoch) return;
+            if (_currentImageIndex != index ||
+                index >= _imageFiles.Count ||
+                !string.Equals(_imageFiles[index], path, StringComparison.OrdinalIgnoreCase))
+                return;
+            SingleImage.StaticSource = bmp;
+        }
 
-        SingleImage.Source = bmp;
         _imageTempZoom = 1.0;
         ImageScale.ScaleX = 1.0;
         ImageScale.ScaleY = 1.0;
@@ -821,7 +851,8 @@ public partial class MainWindow : Window
 
         if (_imageFiles.Count == 0)
         {
-            SingleImage.Source = null;
+            SingleImage.GifPath = null;
+            SingleImage.StaticSource = null;
             TitleFileName.Text = "";
             ShowStatus("无图片");
             return;
@@ -1455,6 +1486,10 @@ public partial class MainWindow : Window
     #endregion
 
     #region 设置窗口
+
+    private static bool IsGifPath(string? path) =>
+        !string.IsNullOrEmpty(path) &&
+        Path.GetExtension(path).Equals(".gif", StringComparison.OrdinalIgnoreCase);
 
     private void BtnSettings_OnClick(object sender, RoutedEventArgs e)
     {

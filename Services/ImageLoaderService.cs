@@ -24,7 +24,7 @@ public static class ImageLoaderService
     public static Task<BitmapSource?> LoadAsync(string path, int decodePixelWidth = 0,
         CancellationToken cancellationToken = default)
     {
-        return Task.Run(() =>
+        return Task.Run<BitmapSource?>(() =>
         {
             try
             {
@@ -35,10 +35,9 @@ public static class ImageLoaderService
                 var ext = Path.GetExtension(path).ToLowerInvariant();
                 var isGif = ext == ".gif";
 
-                // GIF 单独处理以保证动画播放。
+                // GIF 单帧解码仍可用于占位；动画由 AutoGifImage 按帧播放。
                 if (isGif)
                 {
-                    // GifBitmapDecoder 支持多帧动画；WPF Image 控件可自动播放。
                     using var stream = new FileStream(path, FileMode.Open,
                         FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous);
                     var decoder = new GifBitmapDecoder(
@@ -46,7 +45,7 @@ public static class ImageLoaderService
                         BitmapCacheOption.OnLoad);
                     var frame = decoder.Frames[0];
                     frame.Freeze();
-                    return (BitmapSource)frame;
+                    return frame;
                 }
 
                 // 普通图片：用 BitmapImage + DecodePixelWidth 优化。
@@ -93,6 +92,50 @@ public static class ImageLoaderService
         {
             return new SizeInt(0, 0);
         }
+    }
+
+    /// <summary>
+    /// 解码 GIF 全部帧及每帧延迟（毫秒），帧已冻结，可在 UI 线程轮播。
+    /// </summary>
+    public static List<(BitmapSource Frame, int DelayMs)> DecodeGifFrames(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open,
+            FileAccess.Read, FileShare.Read);
+        var decoder = new GifBitmapDecoder(
+            stream, BitmapCreateOptions.PreservePixelFormat,
+            BitmapCacheOption.OnLoad);
+        var frames = new List<(BitmapSource, int)>(decoder.Frames.Count);
+        foreach (var frame in decoder.Frames)
+        {
+            if (!frame.IsFrozen)
+                frame.Freeze();
+            frames.Add((frame, ReadGifDelayMs(frame)));
+        }
+        return frames;
+    }
+
+    private static int ReadGifDelayMs(BitmapFrame frame)
+    {
+        const int fallbackMs = 100;
+        try
+        {
+            if (frame.Metadata is BitmapMetadata meta)
+            {
+                var delay = meta.GetQuery("/grctlext/Delay");
+                if (delay != null)
+                {
+                    var hundredths = Convert.ToInt32(delay);
+                    // GIF 延迟 0 在浏览器里通常按 100ms 处理。
+                    if (hundredths <= 0) return fallbackMs;
+                    return hundredths * 10;
+                }
+            }
+        }
+        catch
+        {
+            // 无图形控制扩展时用默认间隔
+        }
+        return fallbackMs;
     }
 }
 
