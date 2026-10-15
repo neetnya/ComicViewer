@@ -54,6 +54,7 @@ public partial class MainWindow : Window
     // 侧栏/顶栏自动隐藏：鼠标位置定时器。
     private DispatcherTimer? _sidebarHideTimer;
     private DispatcherTimer? _toastTimer;
+    private DispatcherTimer? _resizeTimer;
     private bool _sidebarHovering;
     private bool _topBarHovering;
 
@@ -143,6 +144,7 @@ public partial class MainWindow : Window
     {
         _sidebarHideTimer?.Stop();
         _toastTimer?.Stop();
+        _resizeTimer?.Stop();
         CompositionTarget.Rendering -= ScrollAnim_Rendering;
         _loadCts.Cancel();
         _loadCts.Dispose();
@@ -194,6 +196,26 @@ public partial class MainWindow : Window
     {
         if (_isFullscreen) ExitFullscreen();
         else EnterFullscreen();
+    }
+
+    private void MainWindow_OnSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!IsLoaded || _config.Mode != ViewMode.Comic || _comicItems.Count == 0)
+            return;
+        if (_resizeTimer == null)
+        {
+            _resizeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+            _resizeTimer.Tick += ResizeTimer_Tick;
+        }
+        _resizeTimer.Stop();
+        _resizeTimer.Start();
+    }
+
+    private void ResizeTimer_Tick(object? sender, EventArgs e)
+    {
+        _resizeTimer?.Stop();
+        if (_config.Mode == ViewMode.Comic && _comicItems.Count > 0)
+            ResizeComicDisplay();
     }
 
     private void TopBar_OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
