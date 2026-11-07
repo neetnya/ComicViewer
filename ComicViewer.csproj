@@ -12,6 +12,15 @@
     <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
   </PropertyGroup>
 
+  <!-- 排除放在仓库根下的第三方源码（NeeView），避免被默认 glob 扫描编译 -->
+  <ItemGroup>
+    <Compile Remove="NeeView-master\**" />
+    <Page Remove="NeeView-master\**" />
+    <ApplicationDefinition Remove="NeeView-master\**" />
+    <None Remove="NeeView-master\**" />
+    <Resource Remove="NeeView-master\**" />
+  </ItemGroup>
+
   <!-- 便携式单文件发布配置：dotnet publish -c Publish -r win-x64 -->
   <PropertyGroup Condition="'$(Configuration)' == 'Publish'">
     <PublishSingleFile>true</PublishSingleFile>
