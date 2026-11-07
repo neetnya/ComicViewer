@@ -78,19 +78,11 @@
 dotnet run
 ```
 
-### 发布便携式单文件
+### 发布
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1
+dotnet build -c Release
 ```
-
-或手动：
-
-```powershell
-dotnet publish -c Publish -r win-x64 --self-contained false -o publish
-```
-
-产物在 `publish\ComicViewer.exe`，直接拷贝运行。首次运行后会在 exe 同目录生成 `config.json`。
 
 ## 项目结构
 
