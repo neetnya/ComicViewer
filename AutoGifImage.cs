@@ -10,7 +10,7 @@ namespace ComicViewer;
 
 /// <summary>
 /// 静态图走 <see cref="StaticSource"/>；GIF 自行按完整合成帧播放。
-/// 切换路径、隐藏或虚拟化卸载时立即取消解码、停止计时器并清空 Source，防止旧帧残留与内存泄漏。
+/// 支持通过 <see cref="IsPlaybackEnabled"/> 控制离屏 GIF 暂停并释放帧内存。
 /// </summary>
 public sealed class AutoGifImage : Image
 {
@@ -23,6 +23,11 @@ public sealed class AutoGifImage : Image
         DependencyProperty.Register(
             nameof(StaticSource), typeof(ImageSource), typeof(AutoGifImage),
             new PropertyMetadata(null, OnStaticSourceChanged));
+
+    public static readonly DependencyProperty IsPlaybackEnabledProperty =
+        DependencyProperty.Register(
+            nameof(IsPlaybackEnabled), typeof(bool), typeof(AutoGifImage),
+            new PropertyMetadata(true, OnIsPlaybackEnabledChanged));
 
     private List<(BitmapSource Frame, int DelayMs)>? _frames;
     private int _index;
@@ -42,6 +47,13 @@ public sealed class AutoGifImage : Image
         set => SetValue(StaticSourceProperty, value);
     }
 
+    /// <summary>是否允许解码并播放 GIF；离屏置 false 可立即释放所有帧缓存与计时器。</summary>
+    public bool IsPlaybackEnabled
+    {
+        get => (bool)GetValue(IsPlaybackEnabledProperty);
+        set => SetValue(IsPlaybackEnabledProperty, value);
+    }
+
     public AutoGifImage()
     {
         Loaded += (_, _) => TryStart();
@@ -50,7 +62,7 @@ public sealed class AutoGifImage : Image
         {
             if (e.NewValue is bool visible)
             {
-                if (visible)
+                if (visible && IsPlaybackEnabled)
                 {
                     if (_timer != null) _timer.Start();
                     else if (_frames == null && IsLoaded && IsGif(GifPath)) TryStart();
@@ -77,6 +89,17 @@ public sealed class AutoGifImage : Image
             img.Source = img.StaticSource;
     }
 
+    private static void OnIsPlaybackEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var img = (AutoGifImage)d;
+        if (!IsGif(img.GifPath)) return;
+
+        if (e.NewValue is true)
+            img.TryStart();
+        else
+            img.StopPlayback(clearSource: true);
+    }
+
     private void TryStart()
     {
         if (!IsLoaded) return;
@@ -87,7 +110,12 @@ public sealed class AutoGifImage : Image
             return;
         }
 
-        if (!IsVisible) return;
+        if (!IsPlaybackEnabled || !IsVisible) return;
+        if (_frames != null && _timer != null)
+        {
+            _timer.Start();
+            return;
+        }
         _ = PlayGifAsync(path!);
     }
 
@@ -109,7 +137,7 @@ public sealed class AutoGifImage : Image
             return;
         }
 
-        if (ct.IsCancellationRequested || epoch != _playEpoch || !IsLoaded) return;
+        if (ct.IsCancellationRequested || epoch != _playEpoch || !IsLoaded || !IsPlaybackEnabled) return;
         if (!string.Equals(GifPath, path, StringComparison.OrdinalIgnoreCase)) return;
         if (frames.Count == 0) return;
 

@@ -67,8 +67,22 @@ public static class FolderNavigationService
         }
     }
 
-    /// <summary>判断路径是否为隐藏或系统属性。</summary>
+    /// <summary>判断文件是否为隐藏属性（不过滤 System，避免误屏蔽用户图片）。</summary>
     public static bool IsHidden(string path)
+    {
+        try
+        {
+            var attr = File.GetAttributes(path);
+            return (attr & FileAttributes.Hidden) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>判断目录是否为隐藏或系统目录（用于过滤 .Bin 等系统目录）。</summary>
+    public static bool IsHiddenOrSystemDir(string path)
     {
         try
         {
@@ -110,7 +124,7 @@ public static class FolderNavigationService
         try
         {
             return Directory.EnumerateDirectories(folder)
-                .Where(d => !IsHidden(d))
+                .Where(d => !IsHiddenOrSystemDir(d))
                 .OrderByNaturalPath()
                 .ToList();
         }
@@ -133,7 +147,7 @@ public static class FolderNavigationService
         {
             return parent.EnumerateDirectories()
                 .Select(d => d.FullName)
-                .Where(d => !IsHidden(d))
+                .Where(d => !IsHiddenOrSystemDir(d))
                 .OrderByNaturalPath()
                 .ToList();
         }

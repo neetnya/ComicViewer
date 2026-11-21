@@ -29,10 +29,11 @@ public partial class MainWindow : Window
     private int _currentImageIndex;
     private int _currentImageCountShown = 1; // 图片模式当前同屏显示的张数（1 或 2）
 
-    // 漫画模式下的图片源数据列表（绑到 ItemsControl）及内置 ScrollViewer。
+    // 漫画模式下的图片源数据列表（绑到 ItemsControl）。
     private readonly ObservableCollection<ComicImageItem> _comicItems = [];
-    private ScrollViewer? _comicScroll;
     private bool _heightsComputed;
+    private int _lastComicDisplayedIndex = -1;
+    private double _dpiScaleX = 1.0;
 
     // 图片模式：临时缩放、适应基数、旋转角度与拖动平移。
     private double _imageTempZoom = 1.0;
@@ -82,11 +83,19 @@ public partial class MainWindow : Window
 
     #region 启动与关闭
 
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        if (newDpi.DpiScaleX > 0)
+            _dpiScaleX = newDpi.DpiScaleX;
+    }
+
     private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
         _config = ConfigService.Load();
+        var dpi = VisualTreeHelper.GetDpi(this);
+        if (dpi.DpiScaleX > 0) _dpiScaleX = dpi.DpiScaleX;
         ApplyBackgroundBrush();
-        EnsureComicScroll();
 
         // 启动侧栏/顶栏自动隐藏定时器（全屏时鼠标移开自动隐藏）
         _sidebarHideTimer = new DispatcherTimer(
@@ -162,14 +171,6 @@ public partial class MainWindow : Window
         ConfigService.Save(_config);
     }
 
-    private ScrollViewer? EnsureComicScroll()
-    {
-        if (_comicScroll != null) return _comicScroll;
-        ComicList.ApplyTemplate();
-        _comicScroll = ComicList.FindDescendant<ScrollViewer>();
-        return _comicScroll;
-    }
-
     private void ApplyBackgroundBrush()
     {
         try
@@ -179,6 +180,8 @@ public partial class MainWindow : Window
             brush.Freeze();
             Background = brush;
             RootGrid.Background = brush;
+            ComicScroll.Background = brush;
+            ImagePanel.Background = brush;
         }
         catch
         {
@@ -186,6 +189,8 @@ public partial class MainWindow : Window
             brush.Freeze();
             Background = brush;
             RootGrid.Background = brush;
+            ComicScroll.Background = brush;
+            ImagePanel.Background = brush;
         }
     }
 
@@ -198,13 +203,11 @@ public partial class MainWindow : Window
     private void EnterFullscreen()
     {
         _isFullscreen = true;
-        // WPF 在已 Maximized 状态下直接改 WindowStyle=None 可能无法盖住任务栏，需先恢复 Normal。
         if (WindowState == WindowState.Maximized)
             WindowState = WindowState.Normal;
         WindowStyle = WindowStyle.None;
         WindowState = WindowState.Maximized;
 
-        // 全屏时顶栏/侧栏以覆盖层形式自动隐藏，内容区占满全屏。
         ContentHost.Margin = new Thickness(0);
         Sidebar.Margin = new Thickness(0);
         TopBar.Visibility = Visibility.Collapsed;
@@ -222,7 +225,6 @@ public partial class MainWindow : Window
         WindowStyle = WindowStyle.SingleBorderWindow;
         WindowState = WindowState.Normal;
 
-        // 窗口模式下内容区让出顶栏（34px）与侧栏（240px），彻底避免遮挡图片。
         ContentHost.Margin = new Thickness(240, 34, 0, 0);
         Sidebar.Margin = new Thickness(0, 34, 0, 0);
         TopBar.Visibility = Visibility.Visible;
@@ -300,7 +302,6 @@ public partial class MainWindow : Window
 
     private void MainWindow_OnKeyDown(object sender, KeyEventArgs e)
     {
-        // 当焦点在跳转页码输入框时，仅处理 Esc，其余交给输入框本身。
         if (JumpPageBox.IsKeyboardFocusWithin)
         {
             if (e.Key == Key.Escape)
@@ -343,7 +344,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 帮助层打开时阻止其它阅读快捷键穿透。
         if (HelpOverlay.Visibility == Visibility.Visible) return;
 
         switch (e.Key)
@@ -538,7 +538,7 @@ public partial class MainWindow : Window
         BtnToggleMode.Content = mode == ViewMode.Comic ? "图片模式" : "漫画模式";
 
         bool showComic = mode == ViewMode.Comic;
-        ComicList.Visibility = showComic ? Visibility.Visible : Visibility.Collapsed;
+        ComicScroll.Visibility = showComic ? Visibility.Visible : Visibility.Collapsed;
         ImagePanel.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
         BtnDelete.Visibility = showComic ? Visibility.Collapsed : Visibility.Visible;
 
@@ -599,18 +599,16 @@ public partial class MainWindow : Window
             }
         }
 
-        var scroll = EnsureComicScroll();
-        if (scroll != null)
-        {
-            scroll.ScrollChanged -= ComicScroll_OnScrollChanged;
-            scroll.ScrollToVerticalOffset(0);
-        }
+        ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
+        ComicScroll.ScrollToVerticalOffset(0);
 
         _comicItems.Clear();
         _heightsComputed = false;
+        _lastComicDisplayedIndex = -1;
         _currentImageIndex = startIndex;
         _lastStableMax = -1;
         _lastReleaseOffset = double.NaN;
+        _lastScrollCheckOffset = double.NaN;
         TitleFileName.Text = "";
         TopPageIndicator.Text = "";
 
@@ -641,30 +639,33 @@ public partial class MainWindow : Window
 
     private async Task LoadComicModeAsync(int startIndex = 0, CancellationToken ct = default)
     {
-        var scroll = EnsureComicScroll();
-        if (scroll != null)
-            scroll.ScrollChanged -= ComicScroll_OnScrollChanged;
-
+        ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
         _comicItems.Clear();
         _heightsComputed = false;
+        _lastComicDisplayedIndex = -1;
 
         var displayWidth = GetComicDisplayWidth();
         var decodeWidth = GetComicDecodeWidth(displayWidth);
         var itemMargin = GetComicItemMargin();
 
-        foreach (var path in _imageFiles)
+        startIndex = Math.Clamp(startIndex, 0, Math.Max(0, _imageFiles.Count - 1));
+        var initFirst = Math.Max(0, startIndex - Math.Clamp(_config.PreloadUpCount, 0, 50));
+        var initLast = Math.Min(_imageFiles.Count - 1, startIndex + Math.Clamp(_config.PreloadDownCount, 0, 50));
+
+        for (var i = 0; i < _imageFiles.Count; i++)
         {
+            var path = _imageFiles[i];
             _comicItems.Add(new ComicImageItem
             {
                 Path = path,
                 DisplayWidth = displayWidth,
                 ItemMargin = itemMargin,
+                IsActive = i >= initFirst && i <= initLast,
                 State = IsGifPath(path) ? ComicLoadState.Gif : ComicLoadState.Idle,
             });
         }
 
         if (ct.IsCancellationRequested) return;
-        startIndex = Math.Clamp(startIndex, 0, Math.Max(0, _comicItems.Count - 1));
 
         if (startIndex <= 0)
         {
@@ -673,20 +674,15 @@ public partial class MainWindow : Window
 
             if (ct.IsCancellationRequested) return;
 
-            scroll = EnsureComicScroll();
-            if (scroll != null)
-            {
-                scroll.ScrollToVerticalOffset(0);
-                scroll.ScrollChanged -= ComicScroll_OnScrollChanged;
-                scroll.ScrollChanged += ComicScroll_OnScrollChanged;
-            }
+            ComicScroll.ScrollToVerticalOffset(0);
+            ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
+            ComicScroll.ScrollChanged += ComicScroll_OnScrollChanged;
             _scrollVelocity = 0;
 
             _ = PrecomputeHeightsAsync(displayWidth, ct);
             _ = LoadNearbyPagesAsync(0, decodeWidth, ct);
 
-            UpdateCurrentFileName();
-            UpdateComicStatus();
+            UpdateComicIndicators(0);
         }
         else
         {
@@ -700,19 +696,14 @@ public partial class MainWindow : Window
                 if (ct.IsCancellationRequested) return;
             }
 
-            scroll = EnsureComicScroll();
-            if (scroll != null)
-            {
-                scroll.ScrollChanged -= ComicScroll_OnScrollChanged;
-                scroll.ScrollChanged += ComicScroll_OnScrollChanged;
-            }
+            ComicScroll.ScrollChanged -= ComicScroll_OnScrollChanged;
+            ComicScroll.ScrollChanged += ComicScroll_OnScrollChanged;
             _scrollVelocity = 0;
 
             await Dispatcher.InvokeAsync(
                 () => ScrollComicToIndex(startIndex), DispatcherPriority.Loaded);
 
-            UpdateCurrentFileName();
-            UpdateComicStatus();
+            UpdateComicIndicators(startIndex);
         }
     }
 
@@ -728,6 +719,7 @@ public partial class MainWindow : Window
     }
 
     private double _lastReleaseOffset = double.NaN;
+    private double _lastScrollCheckOffset = double.NaN;
     private const double ReleaseThrottlePixels = 300.0;
 
     private Thickness GetComicItemMargin()
@@ -738,17 +730,10 @@ public partial class MainWindow : Window
 
     private double GetItemVerticalGap() => Math.Clamp(_config.ComicPageGap, 0, 40);
 
-    /// <summary>
-    /// 按视口中上方焦点位置判定当前正在阅读的图片索引：
-    /// 当视口同时展示上一张末尾与下一张前半部分时，及时切换到下一张文件名。
-    /// </summary>
     private int GetComicCurrentImageIndex()
     {
         if (_comicItems.Count == 0) return 0;
-        var scroll = EnsureComicScroll();
-        if (scroll == null) return 0;
-
-        var probeOffset = scroll.VerticalOffset + Math.Min(scroll.ViewportHeight * 0.35, 220);
+        var probeOffset = ComicScroll.VerticalOffset + Math.Min(ComicScroll.ViewportHeight * 0.35, 220);
         var gap = GetItemVerticalGap();
         double accum = 0;
         for (var i = 0; i < _comicItems.Count; i++)
@@ -762,19 +747,15 @@ public partial class MainWindow : Window
     private void ScrollComicToIndex(int index)
     {
         if (_comicItems.Count == 0) return;
-        var scroll = EnsureComicScroll();
-        if (scroll == null) return;
-
         index = Math.Clamp(index, 0, _comicItems.Count - 1);
-        scroll.UpdateLayout();
+        ComicScroll.UpdateLayout();
         var gap = GetItemVerticalGap();
         double offset = 0;
         for (var i = 0; i < index; i++)
             offset += _comicItems[i].DisplayHeight + gap;
 
-        scroll.ScrollToVerticalOffset(offset);
-        UpdateCurrentFileName();
-        UpdateComicStatus();
+        ComicScroll.ScrollToVerticalOffset(offset);
+        UpdateComicIndicators(index);
     }
 
     private async Task PrecomputeHeightsAsync(double displayWidth, CancellationToken ct = default)
@@ -869,7 +850,6 @@ public partial class MainWindow : Window
 
             if (bmp == null)
             {
-                // 标记失败，避免后续每次滚动都反复重试坏图导致 CPU 飙升。
                 item.State = ComicLoadState.Failed;
                 return;
             }
@@ -889,53 +869,92 @@ public partial class MainWindow : Window
 
     private void ComicScroll_OnScrollChanged(object sender, ScrollChangedEventArgs e)
     {
-        if (_loadCts.IsCancellationRequested) return;
-        var scroll = EnsureComicScroll();
-        if (scroll == null || scroll.ViewportHeight <= 0) return;
+        if (_loadCts.IsCancellationRequested || _comicItems.Count == 0) return;
+        if (ComicScroll.ViewportHeight <= 0) return;
 
-        UpdateCurrentFileName();
-        UpdateComicStatus();
+        // 节流：惯性滑行时每移动 >= 48px 才扫描一次页码与预加载窗口，极大降低高刷屏每帧 UI 线程开销。
+        var offset = ComicScroll.VerticalOffset;
+        if (!double.IsNaN(_lastScrollCheckOffset) &&
+            Math.Abs(offset - _lastScrollCheckOffset) < 48.0)
+            return;
+        _lastScrollCheckOffset = offset;
 
-        var decodeWidth = GetComicDecodeWidth(GetComicDisplayWidth());
         var center = GetComicCurrentImageIndex();
+        if (center != _lastComicDisplayedIndex)
+            UpdateComicIndicators(center);
+
         var up = Math.Clamp(_config.PreloadUpCount, 0, 50);
         var down = Math.Clamp(_config.PreloadDownCount, 0, 50);
         var first = Math.Max(0, center - up);
         var last = Math.Min(_comicItems.Count - 1, center + down);
 
-        var offset = scroll.VerticalOffset;
         if (double.IsNaN(_lastReleaseOffset) ||
             Math.Abs(offset - _lastReleaseOffset) >= ReleaseThrottlePixels)
         {
-            ReleaseDistantComicSources(first, last);
+            UpdateComicActiveWindow(first, last);
             _lastReleaseOffset = offset;
         }
 
+        var decodeWidth = GetComicDecodeWidth(GetComicDisplayWidth());
         var ct = _loadCts.Token;
         for (var i = first; i <= last; i++)
         {
             var item = _comicItems[i];
-            if (item.State == ComicLoadState.Idle ||
-                (item.State == ComicLoadState.Gif && item.DisplayHeight <= 0))
+            if (item.State == ComicLoadState.Gif)
+            {
+                if (!item.IsActive) item.IsActive = true;
+                if (item.DisplayHeight <= 0)
+                    _ = LoadComicItemAsync(i, decodeWidth, ct);
+            }
+            else if (item.State == ComicLoadState.Idle)
             {
                 _ = LoadComicItemAsync(i, decodeWidth, ct);
             }
         }
     }
 
-    private void ReleaseDistantComicSources(int first, int last)
+    /// <summary>同步滑动窗口：释放窗口外静态图的 Source 与 GIF 的帧缓存，静态图不触发 IsActive 通知。</summary>
+    private void UpdateComicActiveWindow(int first, int last)
     {
         for (var i = 0; i < _comicItems.Count; i++)
         {
+            var item = _comicItems[i];
             if (i < first || i > last)
             {
-                var item = _comicItems[i];
+                if (item.State == ComicLoadState.Gif && item.IsActive)
+                    item.IsActive = false;
                 if (item.Source != null)
                 {
                     item.Source = null;
                     item.State = ComicLoadState.Idle;
                 }
             }
+            else if (item.State == ComicLoadState.Gif && !item.IsActive)
+            {
+                item.IsActive = true;
+            }
+        }
+    }
+
+    private void UpdateComicIndicators(int idx)
+    {
+        if (_comicItems.Count == 0)
+        {
+            _lastComicDisplayedIndex = -1;
+            TitleFileName.Text = "";
+            TopPageIndicator.Text = "";
+            return;
+        }
+        idx = Math.Clamp(idx, 0, _comicItems.Count - 1);
+        _lastComicDisplayedIndex = idx;
+        var name = Path.GetFileName(_comicItems[idx].Path);
+        var pageText = $"{idx + 1}/{_comicItems.Count}";
+        TitleFileName.Text = name;
+        TopPageIndicator.Text = pageText;
+        if (!_isFullscreen)
+        {
+            StatusText.Text = $"{pageText}  {name}";
+            StatusBar.Visibility = Visibility.Visible;
         }
     }
 
@@ -950,13 +969,11 @@ public partial class MainWindow : Window
         return w * ratio;
     }
 
-    /// <summary>结合系统 DPI 计算解码像素宽度，确保高分屏清晰。</summary>
+    /// <summary>结合缓存的 DPI 计算解码像素宽度，确保高分屏清晰且滚动帧零 GetDpi 开销。</summary>
     private int GetComicDecodeWidth(double displayWidth)
     {
-        var dpiScale = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        if (dpiScale <= 0) dpiScale = 1.0;
-        var decodeWidth = (int)Math.Round(displayWidth * dpiScale * 1.25);
-        return Math.Clamp(decodeWidth, 64, 4096);
+        var decodeWidth = (int)Math.Round(displayWidth * Math.Max(1.0, _dpiScaleX));
+        return Math.Clamp(decodeWidth, 64, 2880);
     }
 
     /// <summary>Ctrl+滚轮防抖缩放：立即等比缩放视图，停止滚动 180ms 后统一存盘并重解码。</summary>
@@ -1068,7 +1085,6 @@ public partial class MainWindow : Window
         {
             if (_config.RightToLeft)
             {
-                // 日漫从右到左：右侧显示当前页，左侧显示下一页。
                 primaryPath = _imageFiles[index + 1];
                 secondaryPath = _imageFiles[index];
             }
@@ -1147,7 +1163,6 @@ public partial class MainWindow : Window
 
             if (natW > 0 && natH > 0)
             {
-                // Uniform 模式下控件实际渲染出的基准缩放比。
                 var fitWindowScale = Math.Min(viewW / natW, viewH / natH);
                 if (fitWindowScale > 0)
                 {
@@ -1232,23 +1247,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UpdateComicStatus()
-    {
-        if (_comicItems.Count == 0)
-        {
-            TopPageIndicator.Text = "";
-            return;
-        }
-        var idx = GetComicCurrentImageIndex();
-        var pageText = $"{idx + 1}/{_comicItems.Count}";
-        TopPageIndicator.Text = pageText;
-        if (!_isFullscreen)
-        {
-            StatusText.Text = $"{pageText}  {Path.GetFileName(_comicItems[idx].Path)}";
-            StatusBar.Visibility = Visibility.Visible;
-        }
-    }
-
     private void ShowStatus(string message)
     {
         StatusText.Text = message;
@@ -1301,7 +1299,6 @@ public partial class MainWindow : Window
         {
             if (!RecycleFile(path))
             {
-                // 绝不静默永久删除：回收站失败时明确征求用户确认。
                 var perm = MessageBox.Show(this,
                     $"无法将「{Path.GetFileName(path)}」移入回收站（可能位于无回收站的磁盘或网络路径）。\n是否永久删除该文件？（此操作不可撤销）",
                     "无法移入回收站", MessageBoxButton.YesNo, MessageBoxImage.Warning);
@@ -1325,7 +1322,6 @@ public partial class MainWindow : Window
             var removedIndex = _currentImageIndex;
             _imageFiles.RemoveAt(removedIndex);
 
-            // 同步清理漫画列表对应项，避免切回漫画模式残留已删图片。
             if (removedIndex < _comicItems.Count &&
                 string.Equals(_comicItems[removedIndex].Path, path, StringComparison.OrdinalIgnoreCase))
             {
@@ -1509,7 +1505,6 @@ public partial class MainWindow : Window
         base.OnMouseRightButtonDown(e);
         if (IsOverInteractiveControl(e)) return;
 
-        // 漫画模式右键直接打开功能菜单；图片模式默认右键上一张，Shift+右键打开功能菜单。
         if (_config.Mode == ViewMode.Comic ||
             (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
         {
@@ -1577,7 +1572,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>图片模式以鼠标光标为中心的临时缩放。</summary>
     private void ZoomImageAtCursor(double factor, Point cursorInPanel)
     {
         var oldEffective = _baseFitScale * _imageTempZoom;
@@ -1670,23 +1664,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        var scroll = EnsureComicScroll();
-        if (scroll == null)
-        {
-            _scrollAnimating = false;
-            _autoScrolling = false;
-            UpdateRenderingSubscription();
-            return;
-        }
-
         var now = DateTime.UtcNow;
         var dt = (now - _lastScrollTick).TotalSeconds;
         _lastScrollTick = now;
         if (dt <= 0) dt = 1.0 / 60.0;
         if (dt > 0.05) dt = 0.05;
 
-        var current = scroll.VerticalOffset;
-        var max = scroll.ExtentHeight - scroll.ViewportHeight;
+        var current = ComicScroll.VerticalOffset;
+        var max = ComicScroll.ExtentHeight - ComicScroll.ViewportHeight;
         if (max < 0) max = 0;
 
         if (current > max) max = current;
@@ -1727,14 +1712,13 @@ public partial class MainWindow : Window
                 SetAutoScroll(false);
         }
 
-        scroll.ScrollToVerticalOffset(next);
+        ComicScroll.ScrollToVerticalOffset(next);
         UpdateRenderingSubscription();
     }
 
     private void ScrollComicByOnePage(int direction = 1)
     {
-        var scroll = EnsureComicScroll();
-        var step = (scroll?.ViewportHeight ?? 0) * 0.95;
+        var step = ComicScroll.ViewportHeight * 0.95;
         if (step <= 0) step = 300;
         _scrollVelocity += direction * step * (1 - ScrollFriction) * 60.0;
         _scrollVelocity = Math.Clamp(_scrollVelocity, -MaxScrollVelocity, MaxScrollVelocity);
@@ -1744,19 +1728,14 @@ public partial class MainWindow : Window
     private bool IsAtComicLastPage()
     {
         if (_comicItems.Count == 0) return true;
-        // 占位高度尚未算完前不触发末页跳本，防止刚打开时误跳下一本。
         if (!_heightsComputed && _comicItems.Count > 1) return false;
-        var scroll = EnsureComicScroll();
-        if (scroll == null) return true;
-        return scroll.VerticalOffset + scroll.ViewportHeight >= scroll.ExtentHeight - 5;
+        return ComicScroll.VerticalOffset + ComicScroll.ViewportHeight >= ComicScroll.ExtentHeight - 5;
     }
 
     private bool IsAtComicFirstPage()
     {
         if (_comicItems.Count == 0) return true;
-        var scroll = EnsureComicScroll();
-        if (scroll == null) return true;
-        return scroll.VerticalOffset <= 5;
+        return ComicScroll.VerticalOffset <= 5;
     }
 
     #endregion
@@ -2114,7 +2093,6 @@ public partial class MainWindow : Window
         FolderListBox.ItemsSource = _folderEntries;
         SelectSidebarItem(_selectedPath);
 
-        // 非磁盘根列表时，在后台异步统计每个子目录的图片张数，避免卡顿 UI。
         if (targetFolder != null && entries.Count > 0)
             _ = PopulateSidebarCountsAsync(entries, ct);
     }
@@ -2160,16 +2138,23 @@ public partial class MainWindow : Window
         }
     }
 
+    private int _sidebarClickEpoch;
+
     private void FolderListBox_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.OriginalSource is not DependencyObject d) return;
-        var container = ItemsControl.ContainerFromElement(FolderListBox, d) as ListBoxItem;
+        // 若点在滚动条上，交给滚动条自身处理。
+        if (d.FindAncestorOrSelf<ScrollBar>() != null) return;
+
+        var container = d.FindAncestorOrSelf<ListBoxItem>()
+            ?? ItemsControl.ContainerFromElement(FolderListBox, d) as ListBoxItem;
         if (container?.DataContext is not FolderListEntry entry) return;
 
         e.Handled = true;
 
         if (e.ClickCount >= 2)
         {
+            unchecked { _sidebarClickEpoch++; }
             _selectedPath = null;
             FolderListBox.SelectedItem = null;
             _sidebarFolder = entry.Path;
@@ -2204,10 +2189,19 @@ public partial class MainWindow : Window
 
     private async Task OnSidebarFolderClickAsync(string path)
     {
-        if (!Directory.Exists(path)) return;
-        var images = await Task.Run(() => FolderNavigationService.ListImages(path));
-        if (images.Count > 0)
-            await OpenFolderAsync(path, updateSidebar: false, prelistedImages: images);
+        var clickEpoch = unchecked(++_sidebarClickEpoch);
+        try
+        {
+            if (!Directory.Exists(path)) return;
+            var images = await Task.Run(() => FolderNavigationService.ListImages(path));
+            if (clickEpoch != _sidebarClickEpoch) return;
+            if (images.Count > 0)
+                await OpenFolderAsync(path, updateSidebar: false, prelistedImages: images);
+        }
+        catch (Exception ex)
+        {
+            ShowStatus($"打开目录失败：{ex.Message}");
+        }
     }
 
     private static string GetDisplayName(string path)
@@ -2241,7 +2235,6 @@ public partial class MainWindow : Window
             var now = e.GetPosition(this);
             var dx = now.X - _panLast.X;
             var dy = now.Y - _panLast.Y;
-            // 按距离按下点的累计位移判定拖拽，防止慢速拖动被误判为单击翻页。
             if (!_imageDragMoved &&
                 (Math.Abs(now.X - _panStart.X) > 4 || Math.Abs(now.Y - _panStart.Y) > 4))
             {
@@ -2401,9 +2394,21 @@ public sealed class ComicImageItem : INotifyPropertyChanged
     private double _displayWidth;
     private double _displayHeight;
     private Thickness _itemMargin = new(0, 2, 0, 2);
+    private bool _isActive;
 
     public string Path { get; set; } = "";
     public ComicLoadState State { get; set; } = ComicLoadState.Idle;
+
+    public bool IsActive
+    {
+        get => _isActive;
+        set
+        {
+            if (_isActive == value) return;
+            _isActive = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsActive)));
+        }
+    }
 
     public double DisplayWidth
     {

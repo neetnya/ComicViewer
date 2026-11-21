@@ -145,7 +145,7 @@
             </Setter>
         </Style>
 
-        <!-- 阅读区右键菜单（子项使用 Tag 标识，避免 ResourceDictionary 内 x:Name 编译限制） -->
+        <!-- 阅读区右键菜单 -->
         <ContextMenu x:Key="ReaderContextMenu" Opened="ReaderContextMenu_OnOpened">
             <MenuItem Header="在资源管理器中显示" Click="MenuRevealInExplorer_OnClick"/>
             <MenuItem Header="复制图片到剪贴板" Click="MenuCopyImage_OnClick"/>
@@ -223,48 +223,37 @@
 
         <!-- 主内容区：窗口模式下自动让出顶栏与侧栏空间，全屏时占满屏幕 -->
         <Grid x:Name="ContentHost" Background="Transparent">
-            <!-- 漫画模式：ScrollViewer 内置于 ItemsControl.Template，确保 VirtualizingStackPanel 真正生效且按像素滚动 -->
-            <ItemsControl x:Name="ComicList"
+            <!-- 漫画模式：物理像素级 ScrollViewer + 轻量 StackPanel（避免 VirtualizingStackPanel 像素滚动每帧重排卡顿），
+                 离屏静态图与 GIF 均由滑动窗口主动释放 Source/帧缓存，兼顾丝滑流畅与低内存。 -->
+            <ScrollViewer x:Name="ComicScroll"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Hidden"
                           Background="Transparent"
+                          CanContentScroll="False"
+                          PanningMode="VerticalOnly"
                           Focusable="False"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          VirtualizingPanel.ScrollUnit="Pixel"
-                          ScrollViewer.CanContentScroll="True"
-                          ScrollViewer.VerticalScrollBarVisibility="Hidden"
-                          ScrollViewer.HorizontalScrollBarVisibility="Hidden">
-                <ItemsControl.Template>
-                    <ControlTemplate TargetType="ItemsControl">
-                        <ScrollViewer x:Name="PART_ComicScroll"
-                                      Background="Transparent"
-                                      VerticalScrollBarVisibility="Hidden"
-                                      HorizontalScrollBarVisibility="Hidden"
-                                      CanContentScroll="True"
-                                      PanningMode="VerticalOnly"
-                                      Focusable="False"
-                                      IsManipulationEnabled="False">
-                            <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
-                        </ScrollViewer>
-                    </ControlTemplate>
-                </ItemsControl.Template>
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                        <VirtualizingStackPanel Orientation="Vertical"/>
-                    </ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <local:AutoGifImage GifPath="{Binding Path}"
-                                            StaticSource="{Binding Source}"
-                                            Width="{Binding DisplayWidth}"
-                                            Height="{Binding DisplayHeight}"
-                                            Stretch="Uniform"
-                                            HorizontalAlignment="Center"
-                                            RenderOptions.BitmapScalingMode="HighQuality"
-                                            Margin="{Binding ItemMargin}"/>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+                          IsManipulationEnabled="False">
+                <ItemsControl x:Name="ComicList" Focusable="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Vertical"/>
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <local:AutoGifImage GifPath="{Binding Path}"
+                                                StaticSource="{Binding Source}"
+                                                IsPlaybackEnabled="{Binding IsActive}"
+                                                Width="{Binding DisplayWidth}"
+                                                Height="{Binding DisplayHeight}"
+                                                Stretch="Uniform"
+                                                HorizontalAlignment="Center"
+                                                RenderOptions.BitmapScalingMode="HighQuality"
+                                                Margin="{Binding ItemMargin}"/>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
 
             <!-- 图片模式：支持单张/双页并排、适应方式、旋转与光标中心缩放平移 -->
             <Grid x:Name="ImagePanel" Background="Transparent" ClipToBounds="True">

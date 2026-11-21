@@ -7,13 +7,22 @@ namespace ComicViewer.Services;
 /// <summary>
 /// 图片加载服务：异步加载并解码图片，支持 EXIF 方向自动校正、GIF 完整帧合成与并发解码限流。
 /// 关键点：
-/// - 统一通过 FileStream + StreamSource 解码，彻底避免文件名含 '#' / '%' 时 UriSource 解析失败。
+/// - 统一通过单次 FileStream + StreamSource 解码，避免文件名含 '#' / '%' 时 UriSource 失败，且减少重复打开文件。
+/// - 仅对可能含 EXIF 的格式（JPG/TIFF）读取方向元数据，PNG/WebP/BMP 零额外开销。
 /// - 使用 BitmapCacheOption.OnLoad 立即释放文件句柄，避免占用图片文件。
-/// - 使用 SemaphoreSlim 限制并发解码数，防止快速滚动打满线程池。
 /// </summary>
 public static class ImageLoaderService
 {
     private static readonly SemaphoreSlim DecodeGate = new(4, 4);
+
+    private static bool MayHaveExif(string path)
+    {
+        var ext = Path.GetExtension(path);
+        return ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".tif", StringComparison.OrdinalIgnoreCase) ||
+               ext.Equals(".tiff", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// 异步加载静态图片。若指定 <paramref name="decodePixelWidth"/>，则按该宽度（像素）解码。
@@ -41,17 +50,17 @@ public static class ImageLoaderService
                     if (!File.Exists(path))
                         return null;
 
-                    int orientation;
-                    using (var metaStream = new FileStream(path, FileMode.Open,
-                        FileAccess.Read, FileShare.Read))
+                    using var stream = new FileStream(path, FileMode.Open,
+                        FileAccess.Read, FileShare.Read);
+
+                    int orientation = 1;
+                    if (MayHaveExif(path))
                     {
-                        orientation = ReadExifOrientation(metaStream);
+                        orientation = ReadExifOrientation(stream);
+                        stream.Position = 0;
                     }
 
                     cancellationToken.ThrowIfCancellationRequested();
-
-                    using var stream = new FileStream(path, FileMode.Open,
-                        FileAccess.Read, FileShare.Read);
 
                     var bmp = new BitmapImage();
                     bmp.BeginInit();
@@ -109,7 +118,7 @@ public static class ImageLoaderService
             var frame = decoder.Frames[0];
             var w = frame.PixelWidth;
             var h = frame.PixelHeight;
-            var orientation = ReadExifOrientation(frame);
+            var orientation = MayHaveExif(path) ? ReadExifOrientation(frame) : 1;
             return orientation is 5 or 6 or 7 or 8
                 ? new SizeInt(h, w)
                 : new SizeInt(w, h);
@@ -122,8 +131,7 @@ public static class ImageLoaderService
 
     /// <summary>
     /// 解码并合成 GIF 全部完整帧及每帧延迟（毫秒）。
-    /// 正确处理局部帧偏移（Left/Top）、透明合成与 Disposal Method（保留/清背景/恢复上一帧），
-    /// 解决优化 GIF 播放花屏、残影与跳动问题。
+    /// 正确处理局部帧偏移（Left/Top）、透明合成与 Disposal Method（保留/清背景/恢复上一帧）。
     /// </summary>
     public static List<(BitmapSource Frame, int DelayMs)> DecodeGifFrames(
         string path, CancellationToken cancellationToken = default)
@@ -138,14 +146,12 @@ public static class ImageLoaderService
         var result = new List<(BitmapSource, int)>(frameCount);
         if (frameCount == 0) return result;
 
-        // 逻辑画布尺寸：优先读全局逻辑屏幕尺寸，缺失则回退第 0 帧尺寸。
         var canvasWidth = ReadGifMetaInt(decoder.Metadata, "/logscrdesc/Width");
         var canvasHeight = ReadGifMetaInt(decoder.Metadata, "/logscrdesc/Height");
         if (canvasWidth <= 0) canvasWidth = decoder.Frames[0].PixelWidth;
         if (canvasHeight <= 0) canvasHeight = decoder.Frames[0].PixelHeight;
         if (canvasWidth <= 0 || canvasHeight <= 0) return result;
 
-        // 单帧 GIF 无需画布合成。
         if (frameCount == 1)
         {
             var single = decoder.Frames[0];
@@ -167,14 +173,12 @@ public static class ImageLoaderService
             var top = Math.Max(0, ReadGifMetaInt(rawFrame.Metadata, "/imgdesc/Top"));
             var disposal = ReadGifMetaInt(rawFrame.Metadata, "/grctlext/Disposal");
 
-            // Disposal == 3（Restore to previous）需要在绘制本帧前保存当前画布快照。
             if (disposal == 3)
             {
                 previousSnapshot ??= new byte[canvas.Length];
                 Buffer.BlockCopy(canvas, 0, previousSnapshot, 0, canvas.Length);
             }
 
-            // 将局部帧转为 BGRA32 并混合到完整画布。
             var bgra = rawFrame.Format == PixelFormats.Bgra32
                 ? (BitmapSource)rawFrame
                 : new FormatConvertedBitmap(rawFrame, PixelFormats.Bgra32, null, 0);
@@ -195,7 +199,7 @@ public static class ImageLoaderService
                 {
                     var si = srcRow + x * 4;
                     var a = framePixels[si + 3];
-                    if (a == 0) continue; // GIF 透明像素保持底层画布内容
+                    if (a == 0) continue;
 
                     var di = dstRow + x * 4;
                     if (a == 255)
@@ -216,17 +220,14 @@ public static class ImageLoaderService
                 }
             }
 
-            // 从当前画布生成冻结后的完整帧。
             var composed = BitmapSource.Create(
                 canvasWidth, canvasHeight, 96, 96,
                 PixelFormats.Bgra32, null, canvas, canvasStride);
             composed.Freeze();
             result.Add((composed, ReadGifDelayMs(rawFrame)));
 
-            // 应用 Disposal Method，为下一帧准备画布。
             if (disposal == 2)
             {
-                // Restore to background（透明清除本帧覆盖区域）
                 for (var y = 0; y < drawH; y++)
                 {
                     var dstRow = (top + y) * canvasStride + left * 4;
@@ -242,10 +243,24 @@ public static class ImageLoaderService
         return result;
     }
 
+    /// <summary>
+    /// 轻量级 JPEG EXIF 方向字节扫描（仅读前 64KB，不创建 WIC BitmapDecoder，零二次解码开销）。
+    /// 非 JPEG（如 TIFF）回退到延迟解码器读取。
+    /// </summary>
     private static int ReadExifOrientation(Stream stream)
     {
         try
         {
+            var buf = new byte[Math.Min(65536, (int)Math.Min(stream.Length, 65536))];
+            var read = stream.Read(buf, 0, buf.Length);
+            if (read < 12) return 1;
+
+            // JPEG SOI: FF D8
+            if (buf[0] == 0xFF && buf[1] == 0xD8)
+                return ParseJpegExifOrientation(buf, read);
+
+            // TIFF 等其它格式回退 WIC 元数据读取
+            stream.Position = 0;
             var decoder = BitmapDecoder.Create(stream,
                 BitmapCreateOptions.DelayCreation,
                 BitmapCacheOption.None);
@@ -256,6 +271,63 @@ public static class ImageLoaderService
         {
             return 1;
         }
+    }
+
+    private static int ParseJpegExifOrientation(byte[] buf, int len)
+    {
+        var pos = 2;
+        while (pos + 4 < len)
+        {
+            if (buf[pos] != 0xFF) break;
+            while (pos < len && buf[pos] == 0xFF) pos++;
+            if (pos >= len) break;
+
+            var marker = buf[pos++];
+            if (marker == 0xDA || marker == 0xD9) break; // SOS / EOI
+            if (pos + 2 > len) break;
+
+            var segLen = (buf[pos] << 8) | buf[pos + 1];
+            if (segLen < 2 || pos + segLen > len) break;
+
+            // APP1 (0xE1) + "Exif  "
+            if (marker == 0xE1 && segLen >= 16 &&
+                buf[pos + 2] == 0x45 && buf[pos + 3] == 0x78 &&
+                buf[pos + 4] == 0x69 && buf[pos + 5] == 0x66 &&
+                buf[pos + 6] == 0x00 && buf[pos + 7] == 0x00)
+            {
+                var tiff = pos + 8;
+                var littleEndian = buf[tiff] == 0x49 && buf[tiff + 1] == 0x49;
+                if (!littleEndian && !(buf[tiff] == 0x4D && buf[tiff + 1] == 0x4D))
+                    return 1;
+
+                ushort ReadU16(int o) => littleEndian
+                    ? (ushort)(buf[o] | (buf[o + 1] << 8))
+                    : (ushort)((buf[o] << 8) | buf[o + 1]);
+                uint ReadU32(int o) => littleEndian
+                    ? (uint)(buf[o] | (buf[o + 1] << 8) | (buf[o + 2] << 16) | (buf[o + 3] << 24))
+                    : (uint)((buf[o] << 24) | (buf[o + 1] << 16) | (buf[o + 2] << 8) | buf[o + 3]);
+
+                var ifdOffset = (int)ReadU32(tiff + 4);
+                var ifd = tiff + ifdOffset;
+                if (ifd < tiff || ifd + 2 > len) return 1;
+
+                var entries = ReadU16(ifd);
+                for (var i = 0; i < entries; i++)
+                {
+                    var e = ifd + 2 + i * 12;
+                    if (e + 12 > len) break;
+                    if (ReadU16(e) == 0x0112) // Orientation tag
+                    {
+                        var val = ReadU16(e + 8);
+                        return val is >= 1 and <= 8 ? val : 1;
+                    }
+                }
+                return 1;
+            }
+
+            pos += segLen;
+        }
+        return 1;
     }
 
     private static int ReadExifOrientation(BitmapFrame frame)
@@ -276,7 +348,7 @@ public static class ImageLoaderService
         }
         catch
         {
-            // 非 JPEG/TIFF 或无 EXIF 时忽略
+            // 无 EXIF 时忽略
         }
         return 1;
     }
@@ -331,7 +403,6 @@ public static class ImageLoaderService
                 if (delay != null)
                 {
                     var hundredths = Convert.ToInt32(delay);
-                    // GIF 延迟 <= 1 (<=10ms) 在主流浏览器中通常按 100ms 处理，避免极端高刷。
                     if (hundredths <= 1) return fallbackMs;
                     return hundredths * 10;
                 }
