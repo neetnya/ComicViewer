@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Media3D;
 
 namespace ComicViewer;
 
@@ -10,6 +11,7 @@ public static class VisualTreeExtensions
 {
     /// <summary>
     /// 向上查找指定类型的祖先（包括自身）。
+    /// 兼容 Visual、Visual3D 与 FrameworkContentElement（如 Run / Hyperlink），避免 GetParent 抛异常。
     /// </summary>
     public static T? FindAncestorOrSelf<T>(this DependencyObject? d) where T : DependencyObject
     {
@@ -17,8 +19,38 @@ public static class VisualTreeExtensions
         {
             if (d is T t)
                 return t;
-            d = System.Windows.Media.VisualTreeHelper.GetParent(d)
-                ?? (d as System.Windows.FrameworkElement)?.Parent;
+
+            if (d is Visual or Visual3D)
+                d = VisualTreeHelper.GetParent(d) ?? (d as FrameworkElement)?.Parent;
+            else if (d is FrameworkContentElement fce)
+                d = fce.Parent;
+            else
+                d = LogicalTreeHelper.GetParent(d);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 向下查找第一个指定类型的可视化后代（广度优先）。
+    /// </summary>
+    public static T? FindDescendant<T>(this DependencyObject? root) where T : DependencyObject
+    {
+        if (root == null) return null;
+        var queue = new Queue<DependencyObject>();
+        queue.Enqueue(root);
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (current is T match && !ReferenceEquals(current, root))
+                return match;
+
+            if (current is Visual or Visual3D)
+            {
+                var count = VisualTreeHelper.GetChildrenCount(current);
+                for (var i = 0; i < count; i++)
+                    queue.Enqueue(VisualTreeHelper.GetChild(current, i));
+            }
         }
         return null;
     }
@@ -35,12 +67,12 @@ public static class VisualTreeExtensions
             if (ReferenceEquals(d, ancestor))
                 return true;
 
-            if (d is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D)
-                d = System.Windows.Media.VisualTreeHelper.GetParent(d);
-            else if (d is System.Windows.FrameworkContentElement fce)
+            if (d is Visual or Visual3D)
+                d = VisualTreeHelper.GetParent(d);
+            else if (d is FrameworkContentElement fce)
                 d = fce.Parent;
             else
-                d = System.Windows.LogicalTreeHelper.GetParent(d);
+                d = LogicalTreeHelper.GetParent(d);
         }
         return false;
     }

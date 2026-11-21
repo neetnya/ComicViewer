@@ -136,97 +136,171 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="#44ffffff"/>
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <!-- 阅读区右键菜单（子项使用 Tag 标识，避免 ResourceDictionary 内 x:Name 编译限制） -->
+        <ContextMenu x:Key="ReaderContextMenu" Opened="ReaderContextMenu_OnOpened">
+            <MenuItem Header="在资源管理器中显示" Click="MenuRevealInExplorer_OnClick"/>
+            <MenuItem Header="复制图片到剪贴板" Click="MenuCopyImage_OnClick"/>
+            <MenuItem Header="复制文件路径" Click="MenuCopyPath_OnClick"/>
+            <Separator/>
+            <MenuItem Header="视图适应（图片模式）">
+                <MenuItem Tag="FitWindow" Header="适应窗口 (1)" IsCheckable="True" Click="MenuFitWindow_OnClick"/>
+                <MenuItem Tag="FitWidth" Header="适应宽度 (2)" IsCheckable="True" Click="MenuFitWidth_OnClick"/>
+                <MenuItem Tag="ActualSize" Header="1:1 原始大小 (3)" IsCheckable="True" Click="MenuActualSize_OnClick"/>
+            </MenuItem>
+            <MenuItem Header="旋转图片（图片模式）">
+                <MenuItem Header="向左旋转 90° (Q)" Click="MenuRotateLeft_OnClick"/>
+                <MenuItem Header="向右旋转 90° (R)" Click="MenuRotateRight_OnClick"/>
+                <MenuItem Header="重置旋转 (0)" Click="MenuRotateReset_OnClick"/>
+            </MenuItem>
+            <MenuItem Tag="DualPage" Header="双页并排模式 (D)" IsCheckable="True" Click="MenuDualPage_OnClick"/>
+            <MenuItem Tag="Rtl" Header="日漫从右到左 (M)" IsCheckable="True" Click="MenuRtl_OnClick"/>
+            <Separator/>
+            <MenuItem Tag="AutoScroll" Header="漫画自动滚动 (A)" IsCheckable="True" Click="MenuAutoScroll_OnClick"/>
+            <MenuItem Header="跳转到页码... (G)" Click="MenuJumpPage_OnClick"/>
+            <MenuItem Header="快捷键说明 (F1)" Click="MenuShowHelp_OnClick"/>
+        </ContextMenu>
     </Window.Resources>
 
-    <Grid>
-        <!-- 顶部工具栏：绝对定位覆盖层（不占布局），显示时不影响下方图片位置。 -->
-        <Border x:Name="TopBar" Background="#40000000"
+    <Grid x:Name="RootGrid" Background="#1a1a1a">
+        <!-- 顶部工具栏：三栏布局防止窄窗口下标题与按钮重叠 -->
+        <Border x:Name="TopBar" Background="#B0181818"
                 Height="34" VerticalAlignment="Top"
                 Panel.ZIndex="20"
                 MouseLeftButtonDown="TopBar_OnMouseLeftButtonDown">
             <Grid>
-                <!-- 居中显示当前图片文件名（漫画模式按"图片起始"判定，图片模式为当前张） -->
-                <TextBlock x:Name="TitleFileName"
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" x:Name="TopPageIndicator"
+                           Foreground="#bbb" FontSize="12"
+                           VerticalAlignment="Center" Margin="12,0,8,0"
+                           MinWidth="72" Cursor="Hand"
+                           ToolTip="点击快速跳转页码 (G)"
+                           MouseLeftButtonDown="StatusBar_OnMouseLeftButtonDown"/>
+
+                <TextBlock Grid.Column="1" x:Name="TitleFileName"
                            HorizontalAlignment="Center" VerticalAlignment="Center"
                            Foreground="#eee" FontSize="13"
                            TextTrimming="CharacterEllipsis"
-                           Margin="120,0"/>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                            VerticalAlignment="Center" Margin="0,0,6,0">
-                    <Button x:Name="BtnDelete" Width="70" Height="26"
-                            Margin="4,0" Content="删除"
+                           Margin="8,0"/>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Margin="0,0,6,0">
+                    <Button x:Name="BtnDelete" Width="62" Height="26"
+                            Margin="3,0" Content="删除"
                             Style="{StaticResource TopButton}"
                             Visibility="Collapsed"
                             Click="BtnDelete_OnClick"/>
-                    <Button x:Name="BtnToggleMode" Width="110" Height="26"
-                            Margin="4,0" Content="图片模式"
+                    <Button x:Name="BtnToggleMode" Width="92" Height="26"
+                            Margin="3,0" Content="图片模式"
                             Style="{StaticResource TopButton}"
                             Click="BtnToggleMode_OnClick"/>
-                    <Button x:Name="BtnSettings" Width="70" Height="26"
-                            Margin="4,0" Content="设置"
+                    <Button x:Name="BtnSettings" Width="56" Height="26"
+                            Margin="3,0" Content="设置"
                             Style="{StaticResource TopButton}"
                             Click="BtnSettings_OnClick"/>
+                    <Button x:Name="BtnHelp" Width="30" Height="26"
+                            Margin="3,0" Content="?"
+                            ToolTip="快捷键说明 (F1)"
+                            Style="{StaticResource TopButton}"
+                            Click="BtnHelp_OnClick"/>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- 主内容区 -->
-        <Grid>
-            <!-- 漫画模式：连续垂直滚动列表，虚拟化保证流畅 -->
-            <ScrollViewer x:Name="ComicScroll"
-                          VerticalScrollBarVisibility="Hidden"
-                          HorizontalScrollBarVisibility="Hidden"
-                          Background="#1a1a1a"
-                          CanContentScroll="True"
-                          PanningMode="VerticalOnly"
+        <!-- 主内容区：窗口模式下自动让出顶栏与侧栏空间，全屏时占满屏幕 -->
+        <Grid x:Name="ContentHost" Background="Transparent">
+            <!-- 漫画模式：ScrollViewer 内置于 ItemsControl.Template，确保 VirtualizingStackPanel 真正生效且按像素滚动 -->
+            <ItemsControl x:Name="ComicList"
+                          Background="Transparent"
                           Focusable="False"
-                          IsManipulationEnabled="False">
-                <ItemsControl x:Name="ComicList">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <VirtualizingStackPanel IsVirtualizing="True"
-                                                     VirtualizationMode="Recycling"
-                                                     Orientation="Vertical"/>
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <local:AutoGifImage GifPath="{Binding Path}"
-                                                StaticSource="{Binding Source}"
-                                                Width="{Binding DisplayWidth}"
-                                                Height="{Binding DisplayHeight}"
-                                                Stretch="Uniform"
-                                                HorizontalAlignment="Center"
-                                                RenderOptions.BitmapScalingMode="HighQuality"
-                                                Margin="0,2"/>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </ScrollViewer>
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          VirtualizingPanel.ScrollUnit="Pixel"
+                          ScrollViewer.CanContentScroll="True"
+                          ScrollViewer.VerticalScrollBarVisibility="Hidden"
+                          ScrollViewer.HorizontalScrollBarVisibility="Hidden">
+                <ItemsControl.Template>
+                    <ControlTemplate TargetType="ItemsControl">
+                        <ScrollViewer x:Name="PART_ComicScroll"
+                                      Background="Transparent"
+                                      VerticalScrollBarVisibility="Hidden"
+                                      HorizontalScrollBarVisibility="Hidden"
+                                      CanContentScroll="True"
+                                      PanningMode="VerticalOnly"
+                                      Focusable="False"
+                                      IsManipulationEnabled="False">
+                            <ItemsPresenter SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </ItemsControl.Template>
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel Orientation="Vertical"/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <local:AutoGifImage GifPath="{Binding Path}"
+                                            StaticSource="{Binding Source}"
+                                            Width="{Binding DisplayWidth}"
+                                            Height="{Binding DisplayHeight}"
+                                            Stretch="Uniform"
+                                            HorizontalAlignment="Center"
+                                            RenderOptions.BitmapScalingMode="HighQuality"
+                                            Margin="{Binding ItemMargin}"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
 
-            <!-- 图片模式：单张显示，自适应 -->
-            <Grid x:Name="ImagePanel" Background="#1a1a1a"
-                  RenderTransformOrigin="0.5,0.5">
-                <Grid.RenderTransform>
-                    <TransformGroup>
-                        <ScaleTransform x:Name="ImageScale"/>
-                        <TranslateTransform x:Name="ImagePan"/>
-                    </TransformGroup>
-                </Grid.RenderTransform>
-                <local:AutoGifImage x:Name="SingleImage"
-                       Stretch="Uniform"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"
-                       RenderOptions.BitmapScalingMode="HighQuality"/>
+            <!-- 图片模式：支持单张/双页并排、适应方式、旋转与光标中心缩放平移 -->
+            <Grid x:Name="ImagePanel" Background="Transparent" ClipToBounds="True">
+                <Grid x:Name="ImageViewport" RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                        <TransformGroup>
+                            <RotateTransform x:Name="ImageRotate"/>
+                            <ScaleTransform x:Name="ImageScale"/>
+                            <TranslateTransform x:Name="ImagePan"/>
+                        </TransformGroup>
+                    </Grid.RenderTransform>
+                    <Grid x:Name="ImagePairGrid" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition x:Name="LeftImageCol" Width="*"/>
+                            <ColumnDefinition x:Name="RightImageCol" Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <local:AutoGifImage x:Name="PrimaryImage"
+                                            Grid.Column="0"
+                                            Stretch="Uniform"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <local:AutoGifImage x:Name="SecondaryImage"
+                                            Grid.Column="1"
+                                            Visibility="Collapsed"
+                                            Stretch="Uniform"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Margin="4,0,0,0"
+                                            RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Grid>
+                </Grid>
             </Grid>
         </Grid>
 
-        <!-- 左侧文件目录侧栏：本级平铺列表 + 返回上一级。全屏时鼠标移至左侧出现；非全屏默认显示。 -->
+        <!-- 左侧文件目录侧栏 -->
         <Border x:Name="Sidebar"
                 HorizontalAlignment="Left" VerticalAlignment="Stretch"
                 Width="240" Background="#2b2b2b"
@@ -244,7 +318,7 @@
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0" x:Name="SidebarTitle" Text="文件目录"
                            Foreground="#eee" FontSize="14" FontWeight="SemiBold"
-                           Margin="14,10,0,8" TextTrimming="CharacterEllipsis"/>
+                           Margin="14,10,10,8" TextTrimming="CharacterEllipsis"/>
                 <Button Grid.Row="1" x:Name="BtnUp" Content="↑ 返回上一级"
                         Height="28" Margin="8,0,8,8"
                         Style="{StaticResource TopButton}"
@@ -314,20 +388,87 @@
             </Grid>
         </Border>
 
-        <!-- 状态栏：显示当前文件信息，悬浮于右下角。全屏时隐藏。 -->
+        <!-- 状态栏：悬浮于右下角，点击可快速跳转页码 -->
         <Border x:Name="StatusBar"
                 HorizontalAlignment="Right" VerticalAlignment="Bottom"
                 Panel.ZIndex="15"
-                Margin="0,0,12,12" Background="#80000000"
+                Margin="0,0,12,12" Background="#90000000"
                 CornerRadius="6" Padding="10,4"
+                Cursor="Hand" ToolTip="点击跳转页码 (G)"
+                MouseLeftButtonDown="StatusBar_OnMouseLeftButtonDown"
                 Visibility="Collapsed">
             <TextBlock x:Name="StatusText" Foreground="#eee" FontSize="12"/>
         </Border>
 
-        <!-- 全屏轻量提示：不恢复常驻状态栏，短暂显示后自动消失。 -->
+        <!-- 快速跳转页码浮层 (G 键或点击状态栏/页码触发) -->
+        <Border x:Name="JumpOverlay"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                Panel.ZIndex="25"
+                Margin="0,0,0,52" Background="#E6222222"
+                BorderBrush="#555" BorderThickness="1"
+                CornerRadius="8" Padding="14,10"
+                Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="跳转到第" Foreground="#ddd" FontSize="13" VerticalAlignment="Center"/>
+                <TextBox x:Name="JumpPageBox" Width="56" Height="24" Margin="6,0"
+                         Background="#333" Foreground="#eee" BorderBrush="#666"
+                         CaretBrush="#eee" VerticalContentAlignment="Center"
+                         HorizontalContentAlignment="Center"
+                         KeyDown="JumpPageBox_OnKeyDown"/>
+                <TextBlock x:Name="JumpTotalText" Text="/ 1 页" Foreground="#aaa" FontSize="13"
+                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <Slider x:Name="JumpSlider" Width="180" Minimum="1" Maximum="1"
+                        IsSnapToTickEnabled="True" TickFrequency="1"
+                        VerticalAlignment="Center" Margin="0,0,10,0"
+                        ValueChanged="JumpSlider_OnValueChanged"/>
+                <Button Content="跳转" Width="52" Height="26" Margin="0,0,4,0"
+                        Style="{StaticResource TopButton}" Background="#3a5a7a"
+                        Click="BtnJumpGo_OnClick"/>
+                <Button Content="×" Width="28" Height="26"
+                        Style="{StaticResource TopButton}"
+                        Click="BtnJumpClose_OnClick"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 快捷键帮助浮层 (F1) -->
+        <Border x:Name="HelpOverlay"
+                Background="#B0000000"
+                Panel.ZIndex="35"
+                Visibility="Collapsed"
+                MouseLeftButtonDown="HelpOverlay_OnMouseLeftButtonDown">
+            <Border Background="#222" BorderBrush="#555" BorderThickness="1"
+                    CornerRadius="8" Padding="22,18" MaxWidth="540"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="快捷键与操作说明" Foreground="#fff" FontSize="16"
+                               FontWeight="Bold" Margin="0,0,0,12"/>
+                    <TextBlock Foreground="#ddd" FontSize="13" LineHeight="22" TextWrapping="Wrap">
+                        <Run FontWeight="SemiBold" Foreground="#fff">通用导航</Run><LineBreak/>
+                        F11：切换全屏　|　Esc：退出全屏 / 关闭浮层<LineBreak/>
+                        ← / PageUp / Shift+空格 / W：上一页（首页→上一本）<LineBreak/>
+                        → / PageDown / 空格 / S / Enter：下一页（末页→下一本）<LineBreak/>
+                        Home / End：首张 / 末张　|　G：快速跳转页码　|　F1：显示/隐藏本帮助<LineBreak/><LineBreak/>
+                        <Run FontWeight="SemiBold" Foreground="#fff">漫画模式</Run><LineBreak/>
+                        滚轮：惯性滚动　|　Ctrl+滚轮：调整图片宽度（记忆）<LineBreak/>
+                        A：开关自动滚动　|　+ / -：增减自动滚动速度　|　右键：功能菜单<LineBreak/><LineBreak/>
+                        <Run FontWeight="SemiBold" Foreground="#fff">图片模式</Run><LineBreak/>
+                        左键：下一张（放大后拖动平移）　|　右键：上一张　|　Shift+右键：功能菜单<LineBreak/>
+                        Ctrl+滚轮：以光标为中心临时缩放　|　1 / 2 / 3：适应窗口 / 适应宽度 / 1:1<LineBreak/>
+                        Q / R / 0：左旋 90° / 右旋 90° / 重置旋转<LineBreak/>
+                        D：切换双页并排　|　M：切换日漫从右到左　|　Delete：移入回收站
+                    </TextBlock>
+                    <Button Content="关闭 (Esc / F1)" Width="120" Height="30" Margin="0,14,0,0"
+                            HorizontalAlignment="Right"
+                            Style="{StaticResource TopButton}" Background="#3a3a3a"
+                            Click="BtnHelpClose_OnClick"/>
+                </StackPanel>
+            </Border>
+        </Border>
+
+        <!-- 轻量提示条 -->
         <Border x:Name="ToastBar"
                 HorizontalAlignment="Center" VerticalAlignment="Bottom"
-                Panel.ZIndex="30"
+                Panel.ZIndex="40"
                 Margin="0,0,0,48" Background="#CC000000"
                 CornerRadius="6" Padding="14,7"
                 Visibility="Collapsed"

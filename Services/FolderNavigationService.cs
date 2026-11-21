@@ -7,7 +7,7 @@ namespace ComicViewer.Services;
 
 /// <summary>
 /// 文件夹层级导航服务：负责列出同级/子文件夹、切换当前查看目录、
-/// 在末页/末张点击左键时进入下一个同级文件夹（需求第 7 条）。
+/// 在末页/末张点击左键时进入下一个同级文件夹。
 /// </summary>
 public static class FolderNavigationService
 {
@@ -67,13 +67,13 @@ public static class FolderNavigationService
         }
     }
 
-    /// <summary>判断路径是否为隐藏（含系统）。</summary>
+    /// <summary>判断路径是否为隐藏或系统属性。</summary>
     public static bool IsHidden(string path)
     {
         try
         {
             var attr = File.GetAttributes(path);
-            return (attr & FileAttributes.Hidden) != 0;
+            return (attr & (FileAttributes.Hidden | FileAttributes.System)) != 0;
         }
         catch
         {
@@ -100,8 +100,7 @@ public static class FolderNavigationService
     }
 
     /// <summary>
-    /// 列出指定文件夹下的子目录（不递归，非隐藏），按名称自然排序。
-    /// 用于侧栏树形展开。
+    /// 列出指定文件夹下的子目录（不递归，非隐藏、非系统），按名称自然排序。
     /// </summary>
     public static List<string> ListSubFolders(string folder)
     {

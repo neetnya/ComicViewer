@@ -1,16 +1,13 @@
 using System.Diagnostics;
-using System.IO;
+using System.Runtime.InteropServices;
+using ComicViewer.Models;
 using Microsoft.Win32;
 
 namespace ComicViewer.Services;
 
 /// <summary>
 /// 文件关联服务：将本软件注册到系统，使其出现在「设置 → 默认应用」列表中，
-/// 并关联常见图片扩展名。
-///
-/// 说明：Windows 8+ 上真正"设为默认"受 UserChoice 保护，程序无法直接改写，
-/// 但正确注册 ProgId / Application / Capabilities 后，本软件会出现在系统
-/// 默认应用候选列表里，用户即可手动选择。
+/// 并关联常见图片扩展名（按当前用户写入 HKCU，无需管理员权限）。
 /// </summary>
 public static class FileAssociationService
 {
@@ -18,9 +15,14 @@ public static class FileAssociationService
     private const string AppName = "ComicViewer";
     private const string ExeName = "ComicViewer.exe";
 
-    /// <summary>支持的图片扩展名（小写，含点）。</summary>
-    private static readonly string[] ImageExtensions =
-        [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".ico"];
+    private const uint SHCNE_ASSOCCHANGED = 0x08000000;
+    private const uint SHCNF_IDLIST = 0x0000;
+
+    [DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(uint wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+
+    /// <summary>复用 AppConfig 中的统一扩展名列表，避免两端不一致。</summary>
+    private static string[] ImageExtensions => AppConfig.ImageExtensions;
 
     /// <summary>获取当前 exe 完整路径。</summary>
     private static string GetExePath()
@@ -40,7 +42,7 @@ public static class FileAssociationService
 
     /// <summary>
     /// 注册 ProgId、应用程序条目与 Capabilities，使本软件出现在系统默认应用列表，
-    /// 并关联支持的图片扩展名（按当前用户写入 HKCU，无需管理员权限）。
+    /// 并通知 Shell 立即刷新文件关联缓存。
     /// </summary>
     public static void Register()
     {
@@ -77,8 +79,7 @@ public static class FileAssociationService
         }
 
         // 4. 注册 Capabilities（出现在「默认应用 → 按应用设置默认值」）
-        using (var capsKey = Registry.CurrentUser.CreateSubKey(
-            $@"Software\ComicViewer\Capabilities"))
+        using (var capsKey = Registry.CurrentUser.CreateSubKey(@"Software\ComicViewer\Capabilities"))
         {
             capsKey.SetValue("ApplicationName", AppName);
             capsKey.SetValue("ApplicationDescription", "本地漫画 / 图片查看器");
@@ -90,27 +91,43 @@ public static class FileAssociationService
         {
             regAppsKey.SetValue(AppName, @"Software\ComicViewer\Capabilities");
         }
+
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
     }
 
-    /// <summary>当前用户下是否已写入本软件的 ProgId 打开命令。</summary>
-    public static bool IsRegistered()
+    /// <summary>
+    /// 检查当前用户下是否已写入本软件的 ProgId 打开命令，
+    /// 并区分「已注册到当前路径」与「便携程序移动后路径过期」。
+    /// </summary>
+    public static (bool IsRegistered, bool PathMatches) GetRegistrationState()
     {
         try
         {
             using var cmd = Registry.CurrentUser.OpenSubKey(
                 $@"Software\Classes\{ProgId}\shell\open\command");
             var val = cmd?.GetValue(null) as string;
-            return !string.IsNullOrWhiteSpace(val);
+            if (string.IsNullOrWhiteSpace(val))
+                return (false, false);
+
+            var currentExe = GetExePath();
+            var matches = val.Contains(currentExe, StringComparison.OrdinalIgnoreCase);
+            return (true, matches);
         }
         catch
         {
-            return false;
+            return (false, false);
         }
     }
 
+    /// <summary>当前用户下是否已写入本软件的 ProgId 打开命令且路径匹配。</summary>
+    public static bool IsRegistered()
+    {
+        var (registered, pathMatches) = GetRegistrationState();
+        return registered && pathMatches;
+    }
+
     /// <summary>
-    /// 移除本软件写入的 ProgId / 应用程序条目 / Capabilities。
-    /// 仅当扩展名当前仍指向本 ProgId 时才清掉默认值，避免误改用户其它关联。
+    /// 移除本软件写入的 ProgId / 应用程序条目 / Capabilities，并通知 Shell 刷新。
     /// </summary>
     public static void Unregister()
     {
@@ -142,6 +159,8 @@ public static class FileAssociationService
         {
             // 静默：取消关联不应打断设置窗口
         }
+
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, IntPtr.Zero, IntPtr.Zero);
     }
 
     private static void TryDeleteSubKeyTree(string path)
@@ -157,18 +176,11 @@ public static class FileAssociationService
     }
 
     /// <summary>
-    /// 注册关联并打开系统「默认应用」设置页，引导用户手动确认。
+    /// 注册关联并打开系统「默认应用」设置页。若注册本身失败则抛出异常，不再静默吞掉。
     /// </summary>
     public static bool RegisterAndOpenSettings()
     {
-        try
-        {
-            Register();
-        }
-        catch
-        {
-            // 注册失败不阻断打开设置页
-        }
+        Register();
 
         try
         {
